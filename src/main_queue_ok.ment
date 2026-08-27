@@ -1,0 +1,116 @@
+#define __FREERTOS 1
+#include <Arduino.h>
+#include <TMCStepper.h>
+#include <FastAccelStepper.h>
+
+#define X_STEP_PIN 11
+#define X_DIR_PIN 10
+#define X_ENABLE_PIN 12
+#define X_DRIVER_ADDRESS 0
+#define R_SENSE 0.11f
+
+// === JAVÍTOTT STALLGUARD BEÁLLÍTÁSOK ===
+#define X_DIAG_PIN 24       
+
+// Növeltük az érzékenységet! (0-255). 
+// 0 = legkevésbé érzékeny (kerregni fog), 255 = szuperérzékeny (azonnal leáll)
+#define STALL_VALUE 140     
+
+#define STEPS_PER_360_DEG 48000
+const int32_t STEPS_30_DEG = (STEPS_PER_360_DEG / 360) * 30; // 4000 lépés
+
+FastAccelStepperEngine engine = FastAccelStepperEngine();
+FastAccelStepper *stepperX = NULL;
+TMC2209Stepper driverX(&Serial2, R_SENSE, X_DRIVER_ADDRESS);
+
+bool irany_elore = true;
+volatile bool elakadas_tortent = false;
+
+void IRAM_ATTR x_stall_isr() {
+  elakadas_tortent = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+  Serial.println("\n=== BTT SKR PICO - REKONTROLÁLT STALLGUARD TESZT ===");
+
+  pinMode(X_DIAG_PIN, INPUT_PULLDOWN);
+
+  Serial2.begin(115200);
+  delay(200);
+
+  // Driver alapok
+  driverX.begin();
+  driverX.toff(4);
+  driverX.blank_time(24);
+  driverX.I_scale_analog(false);
+  driverX.rms_current(500);        
+  driverX.en_spreadCycle(false);   // StealthChop kötelező a StallGuard4-hez!
+  driverX.microsteps(16);
+
+  // === KÖTELEZŐ JAVÍTÁS A DIAG PIN REAKCIÓHOZ ===
+  driverX.SGTHRS(STALL_VALUE);     // Érzékenység beírása
+  
+  // TCOOLTHRS: Ha a motor lassabb, mint ez az érték, a StallGuard nem aktív.
+  // Beállítjuk a maximális értékre, hogy szinte bármilyen sebességnél mérjen!
+  driverX.TCOOLTHRS(0xFFFFF);     
+  
+  // Kikapcsoljuk a CoolStep-et, mert bezavarhat a mérésbe
+  driverX.semin(0);
+
+  engine.init();
+  stepperX = engine.stepperConnectToPin(X_STEP_PIN);
+  
+  if (stepperX) {
+    stepperX->setDirectionPin(X_DIR_PIN, false);
+    stepperX->setEnablePin(X_ENABLE_PIN, true);
+    
+    // StallGuard teszthez fix sebesség (120 RPM körüli érték ideális)
+    stepperX->setSpeedInHz(8000);       
+    stepperX->setAcceleration(20000);   
+    
+    stepperX->enableOutputs();
+    
+    attachInterrupt(digitalPinToInterrupt(X_DIAG_PIN), x_stall_isr, RISING);
+    Serial.println("Rendszer élesítve.");
+  }
+}
+
+unsigned long utolso_kiiras_ms = 0;
+
+void loop() {
+  // 1. ELAKADÁS KEZELÉSE
+  if (elakadas_tortent) {
+    if (stepperX) {
+      stepperX->forceStopAndKeepPosition();
+      stepperX->disableOutputs();
+    }
+    Serial.println("\n!!! STALLGUARD LEÁLLÍTOTTA A MOTORT !!!");
+    while (true) { delay(1000); }
+  }
+
+  // 2. DIAGNOSZTIKA (Óvatosan olvassuk a UART-ot, hogy lássuk a motor terhelését)
+  if (millis() - utolso_kiiras_ms > 100) {
+    utolso_kiiras_ms = millis();
+    if (stepperX && stepperX->isRunning()) {
+      // SG_RESULT: 0 és 510 között mozog. 
+      // Ha szabadon fut: magas szám (pl. 300-400). Ha megfogod/elakad: leesik 0 közelébe!
+      uint16_t sg_res = driverX.SG_RESULT();
+      Serial.print("Motor fut | Terhelési mutató (SG_RESULT): ");
+      Serial.println(sg_res);
+    }
+  }
+
+  // 3. MOZGÁS
+  if (stepperX && !stepperX->isRunning()) {
+    if (irany_elore) {
+      stepperX->moveTo(STEPS_30_DEG);
+    } else {
+      stepperX->moveTo(-STEPS_30_DEG);
+    }
+    irany_elore = !irany_elore;
+  }
+  
+  delay(10); 
+}

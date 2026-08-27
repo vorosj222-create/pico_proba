@@ -1,0 +1,172 @@
+#include <Arduino.h>
+#include <TMCStepper.h>
+#include <FastAccelStepper.h>
+
+// === E MOTOR PIN KIOSZTÁSOK ===
+#define E_STEP_PIN 14
+#define E_DIR_PIN 13
+#define E_ENABLE_PIN 15
+#define E_DRIVER_ADDRESS 3
+#define E_DIAG_PIN 16       
+
+// === X MOTOR PIN KIOSZTÁSOK ===
+#define X_STEP_PIN 11       
+#define X_DIR_PIN 10
+#define X_ENABLE_PIN 12
+#define X_DRIVER_ADDRESS 0
+#define X_DIAG_PIN 4        
+
+#define R_SENSE 0.11f
+#define STALL_VALUE 40      
+
+#define STEPS_PER_360_DEG 48000
+const int32_t BACKOFF_STEPS = 2000; 
+
+FastAccelStepperEngine engine = FastAccelStepperEngine();
+FastAccelStepper *stepperE = NULL;
+FastAccelStepper *stepperX = NULL;
+
+TMC2209Stepper driverE(&Serial2, R_SENSE, E_DRIVER_ADDRESS);
+TMC2209Stepper driverX(&Serial2, R_SENSE, X_DRIVER_ADDRESS);
+
+volatile bool e_elakadas_tortent = false;
+volatile bool x_elakadas_tortent = false;
+
+unsigned long e_indulas_ms = 0;
+unsigned long x_indulas_ms = 0;
+
+void __not_in_flash_func(e_stall_isr)() {
+  if (millis() - e_indulas_ms > 500) {
+    e_elakadas_tortent = true;
+  }
+}
+
+void __not_in_flash_func(x_stall_isr)() {
+  if (millis() - x_indulas_ms > 500) {
+    x_elakadas_tortent = true;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); } 
+  
+  Serial.println("\n=== BTT SKR PICO - SZEKVENCIÁLIS HOMING TARTÓÁRAMMAL ===");
+
+  pinMode(E_DIAG_PIN, INPUT_PULLDOWN);
+  pinMode(X_DIAG_PIN, INPUT_PULLDOWN);
+
+  Serial2.begin(115200);
+  delay(200);
+
+  // Driver inicializálások
+  driverE.begin(); driverE.toff(4); driverE.blank_time(24); driverE.I_scale_analog(false);
+  driverE.rms_current(500); driverE.en_spreadCycle(false); driverE.microsteps(16);
+  driverE.SGTHRS(STALL_VALUE); driverE.TCOOLTHRS(0xFFFFF); driverE.semin(0);
+
+  driverX.begin(); driverX.toff(4); driverX.blank_time(24); driverX.I_scale_analog(false);
+  driverX.rms_current(500); driverX.en_spreadCycle(false); driverX.microsteps(16);
+  driverX.SGTHRS(STALL_VALUE); driverX.TCOOLTHRS(0xFFFFF); driverX.semin(0);
+
+  engine.init();
+  stepperE = engine.stepperConnectToPin(E_STEP_PIN);
+  stepperX = engine.stepperConnectToPin(X_STEP_PIN);
+  
+  if (!stepperE || !stepperX) {
+    Serial.println("Hiba: Nem sikerült a motorokhoz kapcsolódni!");
+    while(true);
+  }
+
+  // Eredeti iránybeállítások
+  stepperE->setDirectionPin(E_DIR_PIN, false); stepperE->setEnablePin(E_ENABLE_PIN, true);
+  stepperE->setSpeedInHz(12000); stepperE->setAcceleration(15000); stepperE->enableOutputs();
+
+  stepperX->setDirectionPin(X_DIR_PIN, false); stepperX->setEnablePin(X_ENABLE_PIN, true);
+  stepperX->setSpeedInHz(12000); stepperX->setAcceleration(15000); stepperX->enableOutputs();
+  
+  delay(500);
+
+  // ==========================================
+  // 1. LÉPÉS: E MOTOR HOMING SZEKVENCIA
+  // ==========================================
+  Serial.println("\n[E-MOTOR] 1. Fázis: Biztonsági távolodás az ütközőtől...");
+  detachInterrupt(digitalPinToInterrupt(E_DIAG_PIN)); 
+  
+  stepperE->moveTo(-BACKOFF_STEPS);
+  while (stepperE->isRunning()) { delay(10); }
+  delay(200); 
+
+  Serial.println("[E-MOTOR] 2. Fázis: Keresés az ütköző felé...");
+  e_elakadas_tortent = false;
+  e_indulas_ms = millis(); 
+  attachInterrupt(digitalPinToInterrupt(E_DIAG_PIN), e_stall_isr, RISING);
+  
+  stepperE->moveTo(STEPS_PER_360_DEG);
+
+  while (!e_elakadas_tortent && stepperE->isRunning()) {
+    delay(5);
+  }
+
+  detachInterrupt(digitalPinToInterrupt(E_DIAG_PIN));
+  
+  int32_t e_stop_pos = stepperE->getPositionAfterCommandsCompleted();
+  stepperE->forceStopAndNewPosition(e_stop_pos);
+  delay(100);                      
+
+  // 3. Fázis: Finom, KONSTANS eltávolodás a faltól (A mért falpozícióból vonunk ki 400-at)
+  Serial.println("[E-MOTOR] 3. Fázis: Finom eltávolodás az ütközőtől...");
+  stepperE->moveTo(e_stop_pos - 400); 
+  while (stepperE->isRunning()) { delay(10); }
+  
+  // Rögzítjük a megnyugvási pontot végleges 0-nak (Output marad áram alatt)
+  stepperE->setCurrentPosition(0);
+  Serial.println("[E-MOTOR] -> SIKERES HOMING! Pozíció rögzítve és tartva.");
+  delay(500);
+
+  // ==========================================
+  // 2. LÉPÉS: X MOTOR HOMING SZEKVENCIA
+  // ==========================================
+  Serial.println("\n[X-MOTOR] 1. Fázis: Biztonsági távolodás az ütközőtől...");
+  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN)); 
+  
+  stepperX->moveTo(-BACKOFF_STEPS);
+  while (stepperX->isRunning()) { delay(10); }
+  delay(200);
+
+  Serial.println("[X-MOTOR] 2. Fázis: Keresés az ütköző felé...");
+  x_elakadas_tortent = false;
+  x_indulas_ms = millis(); 
+  attachInterrupt(digitalPinToInterrupt(X_DIAG_PIN), x_stall_isr, RISING);
+  
+  stepperX->moveTo(STEPS_PER_360_DEG);
+
+  while (!x_elakadas_tortent && stepperX->isRunning()) {
+    delay(5);
+  }
+
+  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN));
+  
+  int32_t x_stop_pos = stepperX->getPositionAfterCommandsCompleted();
+  stepperX->forceStopAndNewPosition(x_stop_pos);
+  delay(100);
+
+  // 3. Fázis: Finom, KONSTANS eltávolodás az X ütközőtől (A mért falpozícióból vonunk ki 400-at)
+  Serial.println("[X-MOTOR] 3. Fázis: Finom eltávolodás az ütközőtől...");
+  stepperX->moveTo(x_stop_pos - 400);
+  while (stepperX->isRunning()) { delay(10); }
+  
+  // Végleges nullázás az X-re
+  stepperX->setCurrentPosition(0);
+  Serial.println("[X-MOTOR] -> SIKERES HOMING! Pozíció rögzítve és tartva.");
+
+  Serial.println("\n======================================================");
+  Serial.println("=== MINDEN TENGELY SIKERESEN INICIALIZÁLVA (0,0) ===");
+  Serial.println("======================================================");
+
+  stepperX->moveTo(-16000);
+  stepperE->moveTo(-4000);
+}
+
+void loop() {
+  delay(1000);
+}

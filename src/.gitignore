@@ -1,0 +1,20 @@
+# Python ideiglenes fájlok
+__pycache__/
+*.pyc
+
+# Rendszerfájlok
+.DS_Store
+Thumbs.db
+
+# VS Code beállítások (kihagyható, ha nem akarja megosztani a saját nézeteit)
+.vscode/
+
+# === PLATFORMIO SPECIFIKUS KIZÁRÁSOK ===
+# A fordítási könyvtár (ide kerülnek a generált binárisok)
+.pio/
+.pioenvs/
+
+# Automatikusan letöltött külső könyvtárak (a platformio.ini alapján úgyis letöltődnek újra)
+.piolibdeps/
+.clang_complete
+gcc-flags.json
