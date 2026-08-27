@@ -36,14 +36,18 @@ const int32_t BACKOFF_STEPS = 2000;
 // J3 40 fokos elmozdulásához szükséges lépésszám: (48000 / 360) * 40 = 5333 lépés
 const int32_t J3_40_FOK_LEPES = -5333; 
 
+// Átváltási arány: 48000 lépés = 360 fok -> 1 fok = 133.333 lépés
+const float STEPS_PER_DEGREE = 48000.0f / 360.0f;
+
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepperE = NULL; // J2
 FastAccelStepper *stepperX = NULL; // J1
 FastAccelStepper *stepperY = NULL; // J3
 
-// Szervó objektum és követő változó
+// Szervó objektum és követő változók
 Servo gripperServo; 
-int servo_aktualis_szog = 90; // Kezdőérték középállásban
+int servo_bazis_szog = 90;       // A Pythonból érkező kalibrációs alapérték
+int utolso_kikuldott_szog = -1;  // Puffer a felesleges szervó-írások kiszűrésére
 
 TMC2209Stepper driverE(&Serial2, R_SENSE, E_DRIVER_ADDRESS);
 TMC2209Stepper driverX(&Serial2, R_SENSE, X_DRIVER_ADDRESS);
@@ -78,7 +82,7 @@ void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(10); } 
   
-  Serial.println("\n=== BTT SKR PICO - 4 TENGELYES AKTÍV VEZÉRLÉS ===");
+  Serial.println("\n=== BTT SKR PICO - VALÓS IDEJŰ HARDVERES KÖVETÉS ===");
 
   pinMode(E_DIAG_PIN, INPUT_PULLDOWN);
   pinMode(X_DIAG_PIN, INPUT_PULLDOWN);
@@ -132,7 +136,7 @@ void setup() {
 
   // Szervó felprogramozása és indító pozíció (középállás)
   gripperServo.attach(SERVO_PIN, 500, 2500); 
-  gripperServo.write(servo_aktualis_szog); 
+  gripperServo.write(servo_bazis_szog); 
   delay(200);
 
   Serial.println("Rendszer kesz. Varom a Python csatlakozast es a Homing parancsot...");
@@ -226,9 +230,10 @@ void futtat_homing() {
   stepperE->moveTo(-4000);         
   stepperY->moveTo(J3_40_FOK_LEPES); 
   
-  // Szervó visszaállítása középre homingkor
-  servo_aktualis_szog = 90;
-  gripperServo.write(servo_aktualis_szog);
+  // Szervó alapállapotba (90 fokra) húzása
+  servo_bazis_szog = 90;
+  gripperServo.write(servo_bazis_szog);
+  utolso_kikuldott_szog = servo_bazis_szog;
 
   while (stepperX->isRunning() || stepperE->isRunning() || stepperY->isRunning()) { 
     delay(10); 
@@ -244,89 +249,96 @@ void futtat_homing() {
 }
 
 void loop() {
+  // === 1. PARANCSOK FOGADÁSA ÉS FELDOLGOZÁSA ===
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();
 
-    if (input.length() == 0) return;
-
-    // --- 1. HOME PARANCS ---
-    if (input == "HOME") {
-      Serial.println("Homing inditasa parancsra...");
-      futtat_homing();
-      return;
-    }
-
-    // --- 2. AZONNALI MOVE PARANCS (MÓDOSÍTVA 4 TENGELYRE) ---
-    if (input.startsWith("MOVE ")) {
-      int firstSpace = input.indexOf(' ');
-      int secondSpace = input.indexOf(' ', firstSpace + 1);
-      int thirdSpace = input.indexOf(' ', secondSpace + 1);
-      int fourthSpace = input.indexOf(' ', thirdSpace + 1);
-
-      if (firstSpace != -1 && secondSpace != -1 && thirdSpace != -1 && fourthSpace != -1) {
-        long targetJ1 = input.substring(firstSpace + 1, secondSpace).toInt();
-        long targetJ2 = input.substring(secondSpace + 1, thirdSpace).toInt();
-        long targetJ3 = input.substring(thirdSpace + 1, fourthSpace).toInt();
-        int targetJ4  = input.substring(fourthSpace + 1).toInt();
-
-        // Határok ellenőrzése az ES08MDII-höz (0-180 fok)
-        if (targetJ4 < 0) targetJ4 = 0;
-        if (targetJ4 > 180) targetJ4 = 180;
-        servo_aktualis_szog = targetJ4;
-
-        stepperX->moveTo(targetJ1);
-        stepperE->moveTo(targetJ2);
-        stepperY->moveTo(targetJ3);
-        gripperServo.write(servo_aktualis_szog);
-
-        Serial.print("OK: Mozgas inditva -> J1:"); Serial.print(targetJ1);
-        Serial.print(" J2:"); Serial.print(targetJ2);
-        Serial.print(" J3:"); Serial.print(targetJ3);
-        Serial.print(" J4:"); Serial.println(servo_aktualis_szog);
-      } else {
-        Serial.println("HIBA: Hibas MOVE formatum!");
+    if (input.length() > 0) {
+      // --- HOME PARANCS ---
+      if (input == "HOME") {
+        Serial.println("Homing inditasa parancsra...");
+        futtat_homing();
       }
-      return;
-    }
+      // --- AZONNALI MOVE PARANCS ---
+      else if (input.startsWith("MOVE ")) {
+        int firstSpace = input.indexOf(' ');
+        int secondSpace = input.indexOf(' ', firstSpace + 1);
+        int thirdSpace = input.indexOf(' ', secondSpace + 1);
+        int fourthSpace = input.indexOf(' ', thirdSpace + 1);
 
-    // --- 3. QUEUE ASZINKRON MOZGÁS ETETÉS (QMOVE - MÓDOSÍTVA 4 TENGELYRE) ---
-    if (input.startsWith("QMOVE ")) {
-      int firstSpace = input.indexOf(' ');
-      int secondSpace = input.indexOf(' ', firstSpace + 1);
-      int thirdSpace = input.indexOf(' ', secondSpace + 1);
-      int fourthSpace = input.indexOf(' ', thirdSpace + 1);
+        if (firstSpace != -1 && secondSpace != -1 && thirdSpace != -1 && fourthSpace != -1) {
+          long targetJ1 = input.substring(firstSpace + 1, secondSpace).toInt();
+          long targetJ2 = input.substring(secondSpace + 1, thirdSpace).toInt();
+          long targetJ3 = input.substring(thirdSpace + 1, fourthSpace).toInt();
+          int targetJ4  = input.substring(fourthSpace + 1).toInt();
 
-      if (firstSpace != -1 && secondSpace != -1 && thirdSpace != -1 && fourthSpace != -1) {
-        long targetJ1 = input.substring(firstSpace + 1, secondSpace).toInt();
-        long targetJ2 = input.substring(secondSpace + 1, thirdSpace).toInt();
-        long targetJ3 = input.substring(thirdSpace + 1, fourthSpace).toInt();
-        int targetJ4  = input.substring(fourthSpace + 1).toInt();
+          // A Pythonból érkező J4 most már CSAK a kalibrációs offszet (bázis) értéke!
+          servo_bazis_szog = targetJ4;
 
-        if (targetJ4 < 0) targetJ4 = 0;
-        if (targetJ4 > 180) targetJ4 = 180;
-        servo_aktualis_szog = targetJ4;
+          stepperX->moveTo(targetJ1);
+          stepperE->moveTo(targetJ2);
+          stepperY->moveTo(targetJ3);
 
-        stepperX->moveTo(targetJ1);
-        stepperE->moveTo(targetJ2);
-        stepperY->moveTo(targetJ3);
-        gripperServo.write(servo_aktualis_szog);
-        
-        Serial.println("SOR: OK");
-      } else {
-        Serial.println("HIBA: Hibas QMOVE formatum!");
+          Serial.print("OK: Mozgas inditva -> J1:"); Serial.print(targetJ1);
+          Serial.print(" J2:"); Serial.print(targetJ2);
+          Serial.print(" J3:"); Serial.print(targetJ3);
+          Serial.print(" J4 Bazis:"); Serial.println(servo_bazis_szog);
+        } else {
+          Serial.println("HIBA: Hibas MOVE formatum!");
+        }
       }
-      return;
-    }
+      // --- QUEUE ASZINKRON MOZGÁS ETETÉS (QMOVE) ---
+      else if (input.startsWith("QMOVE ")) {
+        int firstSpace = input.indexOf(' ');
+        int secondSpace = input.indexOf(' ', firstSpace + 1);
+        int thirdSpace = input.indexOf(' ', secondSpace + 1);
+        int fourthSpace = input.indexOf(' ', thirdSpace + 1);
 
-    // --- 4. QUEUE AZONNALI TÖRLÉS ÉS VÉSZFÉKEZÉS (QSTOP) ---
-    if (input == "QSTOP") {
-      stepperX->stopMove();
-      stepperE->stopMove();
-      stepperY->stopMove();
-      
-      Serial.println("SOR: SIKERESEN TOROLVE ES MEGALLITVA");
-      return;
+        if (firstSpace != -1 && secondSpace != -1 && thirdSpace != -1 && fourthSpace != -1) {
+          long targetJ1 = input.substring(firstSpace + 1, secondSpace).toInt();
+          long targetJ2 = input.substring(secondSpace + 1, thirdSpace).toInt();
+          long targetJ3 = input.substring(thirdSpace + 1, fourthSpace).toInt();
+          int targetJ4  = input.substring(fourthSpace + 1).toInt();
+
+          servo_bazis_szog = targetJ4;
+
+          stepperX->moveTo(targetJ1);
+          stepperE->moveTo(targetJ2);
+          stepperY->moveTo(targetJ3);
+          
+          Serial.println("SOR: OK");
+        } else {
+          Serial.println("HIBA: Hibas QMOVE formatum!");
+        }
+      }
+      // --- QUEUE AZONNALI TÖRLÉS ÉS VÉSZFÉKEZÉS (QSTOP) ---
+      else if (input == "QSTOP") {
+        stepperX->stopMove();
+        stepperE->stopMove();
+        stepperY->stopMove();
+        Serial.println("SOR: SIKERESEN TOROLVE ES MEGALLITVA");
+      }
     }
+  }
+
+  // === 2. VALÓS IDEJŰ HARDVERES VÍZSZINT-KOMPENZÁCIÓ ===
+  // Lekérjük a J3 motor PILLANATNYI, ÉLŐ lépésszámát a futás közben
+  int32_t j3_aktualis_lepes = stepperY->getCurrentPosition();
+
+  // Átváltjuk a pillanatnyi lépést fizikai fokká
+  float j3_aktualis_fok = (float)j3_aktualis_lepes / STEPS_PER_DEGREE;
+
+  // Kiszámoljuk az élő kompenzációt (Mechanikai paralelogramma miatt: Alap - J3_fok)
+  int korrigalt_j4 = servo_bazis_szog - (int)round(j3_aktualis_fok);
+
+  // Szoftveres biztonsági korlát az ES08MDII-nek
+  if (korrigalt_j4 < 0) korrigalt_j4 = 0;
+  if (korrigalt_j4 > 180) korrigalt_j4 = 180;
+
+  // Csak akkor írunk a szervóra, ha ténylegesen változott a szög (kíméli a szervót)
+  if (korrigalt_j4 != utolso_kikuldott_szog) {
+    gripperServo.write(korrigalt_j4);
+    utolso_kikuldott_szog = korrigalt_j4;
   }
 }
