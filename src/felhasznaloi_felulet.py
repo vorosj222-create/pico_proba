@@ -4,8 +4,8 @@ from tkinter import ttk
 class FelhasznaloiFelulet:
     def __init__(self, root, on_connect, on_home, on_send, on_jog, on_s_curve, on_send_xyz, on_jog_xyz, on_qstop):
         self.root = root
-        self.root.title("Arduino Robotkar Vezérlés")
-        self.root.geometry("580x950") # Növelt magasság az új szervó sornak
+        self.root.title("Arduino Robotkar Vezérlés (5-Axis UI)")
+        self.root.geometry("580x980") 
         self.root.configure(bg="#1e272e")
         
         self.on_connect = on_connect
@@ -50,11 +50,9 @@ class FelhasznaloiFelulet:
         # 1. Kapcsolódás panel
         conn_frame = tk.LabelFrame(self.root, text=" 🔌 Kapcsolódás ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         conn_frame.pack(fill="x", padx=15, pady=8)
-        
         ttk.Label(conn_frame, text="Port:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
         self.port_combobox = ttk.Combobox(conn_frame, width=12, font=('Helvetica', 10))
         self.port_combobox.grid(row=0, column=1, padx=5, pady=10)
-        
         self.connect_btn = ttk.Button(conn_frame, text="Csatlakozás", command=self.on_connect)
         self.connect_btn.grid(row=0, column=2, padx=10, pady=10)
 
@@ -63,36 +61,33 @@ class FelhasznaloiFelulet:
         self.home_frame.pack(fill="x", padx=15, pady=5)
         self.home_btn = ttk.Button(self.home_frame, text="🤖 HOMING (Nullázás) INDÍTÁSA", style="Home.TButton", command=self.on_home)
         self.home_btn.pack(fill="x", padx=15, pady=10)
-
-        # 3. Pozíció és léptető panel (LÉPÉSEK + ÚJ SZERVÓ SOR)
+        # 3. Pozíció és léptető panel (KIBŐVÍTVE J5-tel)
         self.move_frame = tk.LabelFrame(self.root, text=" 🕹️ Pozíció Vezérlés (Lépések és Fokok) ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         self.move_frame.pack(fill="x", padx=15, pady=5)
         
         self.j1_entry = self._motor_sor_letrehozasa("J1 (X):", 0, "0")
         self.j2_entry = self._motor_sor_letrehozasa("J2 (E):", 1, "0")
         self.j3_entry = self._motor_sor_letrehozasa("J3 (Y):", 2, "0")
-        self.j4_entry = self._motor_sor_letrehozasa("J4 (Servo):", 3, "90") # <-- ÚJ: Szervó sor beillesztése, alapértelmezett 90 fokkal
+        self.j4_entry = self._motor_sor_letrehozasa("J4 (Servo):", 3, "90") 
+        self.j5_entry = self._motor_sor_letrehozasa("J5 (Claw):", 4, "90") 
         
         self.send_btn = ttk.Button(self.move_frame, text="🚀 Tengelyek Küldése (Azonnali MOVE)", style="Send.TButton", command=self.on_send)
-        self.send_btn.grid(row=4, column=1, columnspan=5, pady=10, sticky="ew")
+        self.send_btn.grid(row=5, column=1, columnspan=5, pady=10, sticky="ew")
+
         # 4. Térbeli koordináta panel
         self.xyz_frame = tk.LabelFrame(self.root, text=" 📐 Térbeli Kartéziánus Pozíció (XYZ mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
         self.xyz_frame.pack(fill="x", padx=15, pady=5)
-        
         self.x_entry = self._xyz_sor_letrehozasa("X:", 0, "131.5")
         self.y_entry = self._xyz_sor_letrehozasa("Y:", 1, "0.0")
         self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "118.0")
-
         self.xyz_send_btn = ttk.Button(self.xyz_frame, text="🎯 XYZ Pozícióra Küldés", style="XYZ.TButton", command=self.on_send_xyz)
         self.xyz_send_btn.grid(row=3, column=1, columnspan=5, pady=10, sticky="ew")
 
         # 5. Queue panel
         self.queue_frame = tk.LabelFrame(self.root, text=" ⛓️ Queue (Sor) Folyamatos Etetés ", bg="#1e272e", fg="#ffdd59", font=('Helvetica', 10, 'bold'), bd=2)
         self.queue_frame.pack(fill="x", padx=15, pady=5)
-        
         self.s_curve_btn = ttk.Button(self.queue_frame, text="〰️ Folyamatos S-Alakú Pálya Indítása (QMOVE)", command=self.on_s_curve)
         self.s_curve_btn.pack(fill="x", padx=15, pady=5)
-        
         self.qstop_btn = ttk.Button(self.queue_frame, text="🛑 QUEUE VÉSZLEÁLLÍTÁS (QSTOP)", style="QStop.TButton", command=self.on_qstop)
         self.qstop_btn.pack(fill="x", padx=15, pady=5)
 
@@ -104,8 +99,8 @@ class FelhasznaloiFelulet:
 
     def _motor_sor_letrehozasa(self, nev, sor_idx, alapert_ert):
         ttk.Label(self.move_frame, text=nev).grid(row=sor_idx, column=0, padx=10, pady=12, sticky="e")
+        m_id = nev.split(" ") 
         
-        m_id = nev.split(" ")
         btn_n10 = ttk.Button(self.move_frame, text="-10°", width=5, style="JogNeg.TButton", command=lambda: self.on_jog(m_id, -10))
         btn_n10.grid(row=sor_idx, column=1, padx=2)
         btn_n1 = ttk.Button(self.move_frame, text="-1°", width=4, style="JogNeg.TButton", command=lambda: self.on_jog(m_id, -1))
@@ -122,13 +117,12 @@ class FelhasznaloiFelulet:
         
         if not hasattr(self, 'jog_gombok'): self.jog_gombok = []
         self.jog_gombok.extend([btn_n10, btn_n1, btn_p1, btn_p10])
-        
         return entry
 
     def _xyz_sor_letrehozasa(self, tengely_name, sor_idx, alapert_ert):
         ttk.Label(self.xyz_frame, text=tengely_name).grid(row=sor_idx, column=0, padx=15, pady=12, sticky="e")
-        
         t_id = tengely_name.replace(":", "")
+        
         btn_n10 = ttk.Button(self.xyz_frame, text="-10mm", width=7, style="JogNeg.TButton", command=lambda: self.on_jog_xyz(t_id, -10))
         btn_n10.grid(row=sor_idx, column=1, padx=2)
         btn_n1 = ttk.Button(self.xyz_frame, text="-1mm", width=6, style="JogNeg.TButton", command=lambda: self.on_jog_xyz(t_id, -1))
@@ -145,7 +139,6 @@ class FelhasznaloiFelulet:
         
         if not hasattr(self, 'xyz_jog_gombok'): self.xyz_jog_gombok = []
         self.xyz_jog_gombok.extend([btn_n10, btn_n1, btn_p1, btn_p10])
-        
         return entry
 
     def set_controls_state(self, state):
@@ -158,13 +151,12 @@ class FelhasznaloiFelulet:
         self.j2_entry.config(state=state)
         self.j3_entry.config(state=state)
         self.j4_entry.config(state=state)
+        self.j5_entry.config(state=state)
         self.x_entry.config(state=state)
         self.y_entry.config(state=state)
         self.z_entry.config(state=state)
-        for btn in self.jog_gombok:
-            btn.config(state=state)
-        for btn in self.xyz_jog_gombok:
-            btn.config(state=state)
+        for btn in self.jog_gombok: btn.config(state=state)
+        for btn in self.xyz_jog_gombok: btn.config(state=state)
 
     def log_kiiras(self, szoveg):
         self.terminal.config(state="normal")
