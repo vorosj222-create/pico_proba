@@ -33,7 +33,7 @@
 
 #define STEPS_PER_360_DEG 48000
 const int32_t BACKOFF_STEPS = 2000; 
-const int32_t J3_40_FOK_LEPES = -5333; 
+
 const float STEPS_PER_DEGREE = 48000.0f / 360.0f;
 
 FastAccelStepperEngine engine = FastAccelStepperEngine();
@@ -193,9 +193,9 @@ void futtat_homing() {
 
   // FÁZIS 4: VÉGLEGES CÉLRAÁLLÁS ÉS EZUTÁN ENNEK A NULLÁZÁSA
   Serial.println("\n=== Homing kesz, inditom a beallast a kezdo munkapozicioba... ===");
-  stepperX->moveTo(-16000);        
-  stepperE->moveTo(-4000);         
-  stepperY->moveTo(J3_40_FOK_LEPES); 
+  stepperX->moveTo(-16266);        
+  stepperE->moveTo(-3734);         
+  stepperY->moveTo(-6131); 
   
   servo_bazis_szog = 90;
   gripperServo.write(servo_bazis_szog);

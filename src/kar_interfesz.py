@@ -4,29 +4,33 @@ import time
 from soros_kezelo import SorosKezelo
 from inverz_kinematika import InverzKinematika
 from felhasznaloi_felulet import FelhasznaloiFelulet
+from automatizacio import KarAutomatizacio 
 
 class RobotkarAlkalmazas:
     def __init__(self):
         self.root = tk.Tk()
         
-        self.aktualis_x = 131.5
+        # Az új geometriai modell szerinti induló koordináták (L2=118mm, Z_offset=67mm)
+        self.aktualis_x = 118.0
         self.aktualis_y = 0.0
-        self.aktualis_z = 118.0
+        self.aktualis_z = 51.0
         self.homing_folyamatban = False
         
         self.soros = SorosKezelo(log_callback=self.log_erkezett)
         self.kinematika = InverzKinematika()
+        self.automatizacio = KarAutomatizacio(interfesz_app=self)
         
+        # JAVÍTVA: Az on_s_curve teljesen el lett távolítva, így megszűnik a TypeError hiba!
         self.gui = FelhasznaloiFelulet(
             root=self.root,
             on_connect=self.esemeny_kapcsolodas,
             on_home=self.esemeny_homing,
             on_send=self.esemeny_koordinata_kuldes,
             on_jog=self.esemeny_leptetes,
-            on_s_curve=self.esemeny_s_gorbe_inditas,
             on_send_xyz=self.esemeny_xyz_kuldes,
             on_jog_xyz=self.esemeny_xyz_leptetes,
-            on_qstop=self.esemeny_qstop
+            on_qstop=self.esemeny_qstop,
+            on_auto_sequence=self.esemeny_automatizacio_inditas
         )
         
         self._feluleti_ertekek_alaphelyzetbe()
@@ -44,14 +48,14 @@ class RobotkarAlkalmazas:
         self.gui.j4_entry.delete(0, tk.END); self.gui.j4_entry.insert(0, "90") 
         self.gui.j5_entry.delete(0, tk.END); self.gui.j5_entry.insert(0, "90") 
         
-        self.gui.x_entry.delete(0, tk.END); self.gui.x_entry.insert(0, "131.5")
+        # A felületi mezők induló értékei az új fizikai nullaponthoz (X:118, Z:51) igazodnak
+        self.gui.x_entry.delete(0, tk.END); self.gui.x_entry.insert(0, "118.0")
         self.gui.y_entry.delete(0, tk.END); self.gui.y_entry.insert(0, "0.0")
-        self.gui.z_entry.delete(0, tk.END); self.gui.z_entry.insert(0, "118.0")
-
+        self.gui.z_entry.delete(0, tk.END); self.gui.z_entry.insert(0, "51.0")
     def alaphelyzetbe_kenyszerites(self):
-        self.aktualis_x = 131.5
+        self.aktualis_x = 118.0
         self.aktualis_y = 0.0
-        self.aktualis_z = 118.0
+        self.aktualis_z = 51.0
         self._feluleti_ertekek_alaphelyzetbe()
         self.log_erkezett("[RENDSZER] Felület és memória szinkronizálva a nullaponthoz!\n")
 
@@ -82,6 +86,7 @@ class RobotkarAlkalmazas:
         self.homing_folyamatban = True
         self.soros.parancs_kuldes("HOME")
         self.log_erkezett("[PARANCS] Homing parancs kiküldve...\n")
+
     def esemeny_koordinata_kuldes(self):
         if self.homing_folyamatban: return
         try:
@@ -121,7 +126,6 @@ class RobotkarAlkalmazas:
                 messagebox.showwarning("Munkatéren kívül", "A robotkar nem éri el ezt a pontot!")
         except ValueError:
             messagebox.showwarning("Hiba", "Érvénytelen koordináta formátum!")
-
     def esemeny_xyz_leptetes(self, tengely_id, mm_valtozas):
         if self.homing_folyamatban: return
         target_x, target_y, target_z = self.aktualis_x, self.aktualis_y, self.aktualis_z
@@ -179,26 +183,12 @@ class RobotkarAlkalmazas:
         except ValueError:
             messagebox.showwarning("Hiba", "Érvénytelen érték!")
 
-    def esemeny_s_gorbe_inditas(self):
-        if self.homing_folyamatban: return
-        palyapontok = self.kinematika.kor_palya_generalas(cx=143.0, cy=45.0, cz=-60.0, atmero=60.0, felbontas=36, ismetles=10)
-        if not palyapontok: return
-            
-        j4 = int(self.gui.j4_entry.get())
-        j5 = int(self.gui.j5_entry.get()) 
-        for pont in palyapontok:
-            j1, j2, j3 = pont
-            cmd = f"QMOVE {j1} {j2} {j3} {j4} {j5}"
-            self.soros.parancs_kuldes(cmd)
-            time.sleep(0.08) 
-            
-        self.aktualis_x, self.aktualis_y, self.aktualis_z = 173.0, 45.0, -60.0
-        self.gui.x_entry.delete(0, tk.END); self.gui.x_entry.insert(0, str(self.aktualis_x))
-        self.gui.y_entry.delete(0, tk.END); self.gui.y_entry.insert(0, str(self.aktualis_y))
-        self.gui.z_entry.delete(0, tk.END); self.gui.z_entry.insert(0, str(self.aktualis_z))
-
     def esemeny_qstop(self):
         self.soros.parancs_kuldes("QSTOP")
+
+    # Az automata kávécukor-pakolási folyamat indítása
+    def esemeny_automatizacio_inditas(self):
+        self.automatizacio.futtat_munkafolyamat()
 
     def inditas(self):
         self.root.mainloop()

@@ -2,20 +2,20 @@ import tkinter as tk
 from tkinter import ttk
 
 class FelhasznaloiFelulet:
-    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_s_curve, on_send_xyz, on_jog_xyz, on_qstop):
+    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_xyz, on_jog_xyz, on_qstop, on_auto_sequence):
         self.root = root
         self.root.title("Arduino Robotkar Vezérlés (5-Axis UI)")
-        self.root.geometry("580x980") 
+        self.root.geometry("580x950")  
         self.root.configure(bg="#1e272e")
         
         self.on_connect = on_connect
         self.on_home = on_home
         self.on_send = on_send
         self.on_jog = on_jog
-        self.on_s_curve = on_s_curve
         self.on_send_xyz = on_send_xyz
         self.on_jog_xyz = on_jog_xyz
         self.on_qstop = on_qstop
+        self.on_auto_sequence = on_auto_sequence
 
         self._stilusok_beallitasa()
         self._panelek_letrehozasa()
@@ -37,6 +37,9 @@ class FelhasznaloiFelulet:
 
         self.style.configure('XYZ.TButton', background='#ffa801', foreground='#000000', font=('Helvetica', 11, 'bold'))
         self.style.map('XYZ.TButton', background=[('active', '#ffc048')])
+
+        self.style.configure('Auto.TButton', background='#9b59b6', foreground='#ffffff', font=('Helvetica', 11, 'bold'))
+        self.style.map('Auto.TButton', background=[('active', '#8e44ad')])
 
         self.style.configure('QStop.TButton', background='#ff3f34', foreground='#ffffff', font=('Helvetica', 11, 'bold'))
         self.style.map('QStop.TButton', background=[('active', '#ee5253')])
@@ -61,7 +64,7 @@ class FelhasznaloiFelulet:
         self.home_frame.pack(fill="x", padx=15, pady=5)
         self.home_btn = ttk.Button(self.home_frame, text="🤖 HOMING (Nullázás) INDÍTÁSA", style="Home.TButton", command=self.on_home)
         self.home_btn.pack(fill="x", padx=15, pady=10)
-        # 3. Pozíció és léptető panel (KIBŐVÍTVE J5-tel)
+        # 3. Pozíció és léptető panel (J1-J5 gombok)
         self.move_frame = tk.LabelFrame(self.root, text=" 🕹️ Pozíció Vezérlés (Lépések és Fokok) ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         self.move_frame.pack(fill="x", padx=15, pady=5)
         
@@ -77,17 +80,19 @@ class FelhasznaloiFelulet:
         # 4. Térbeli koordináta panel
         self.xyz_frame = tk.LabelFrame(self.root, text=" 📐 Térbeli Kartéziánus Pozíció (XYZ mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
         self.xyz_frame.pack(fill="x", padx=15, pady=5)
-        self.x_entry = self._xyz_sor_letrehozasa("X:", 0, "131.5")
+        self.x_entry = self._xyz_sor_letrehozasa("X:", 0, "118.0")
         self.y_entry = self._xyz_sor_letrehozasa("Y:", 1, "0.0")
-        self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "118.0")
+        self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "51.0")
         self.xyz_send_btn = ttk.Button(self.xyz_frame, text="🎯 XYZ Pozícióra Küldés", style="XYZ.TButton", command=self.on_send_xyz)
         self.xyz_send_btn.grid(row=3, column=1, columnspan=5, pady=10, sticky="ew")
 
-        # 5. Queue panel
+        # 5. Queue panel (Az automata pakoló folyamat)
         self.queue_frame = tk.LabelFrame(self.root, text=" ⛓️ Queue (Sor) Folyamatos Etetés ", bg="#1e272e", fg="#ffdd59", font=('Helvetica', 10, 'bold'), bd=2)
         self.queue_frame.pack(fill="x", padx=15, pady=5)
-        self.s_curve_btn = ttk.Button(self.queue_frame, text="〰️ Folyamatos S-Alakú Pálya Indítása (QMOVE)", command=self.on_s_curve)
-        self.s_curve_btn.pack(fill="x", padx=15, pady=5)
+        
+        self.auto_btn = ttk.Button(self.queue_frame, text="📦 AUTOMATA FOLYAMAT (Pakolás) INDÍTÁSA", style="Auto.TButton", command=self.on_auto_sequence)
+        self.auto_btn.pack(fill="x", padx=15, pady=5)
+        
         self.qstop_btn = ttk.Button(self.queue_frame, text="🛑 QUEUE VÉSZLEÁLLÍTÁS (QSTOP)", style="QStop.TButton", command=self.on_qstop)
         self.qstop_btn.pack(fill="x", padx=15, pady=5)
 
@@ -145,7 +150,7 @@ class FelhasznaloiFelulet:
         self.home_btn.config(state=state)
         self.send_btn.config(state=state)
         self.xyz_send_btn.config(state=state)
-        self.s_curve_btn.config(state=state)
+        self.auto_btn.config(state=state)
         self.qstop_btn.config(state=state)
         self.j1_entry.config(state=state)
         self.j2_entry.config(state=state)
