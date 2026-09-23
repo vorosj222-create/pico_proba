@@ -18,3 +18,5 @@ Thumbs.db
 .piolibdeps/
 .clang_complete
 gcc-flags.json
+
+src/hengerkoordinata.py

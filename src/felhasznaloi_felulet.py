@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 
 class FelhasznaloiFelulet:
-    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_xyz, on_jog_xyz, on_qstop, on_auto_sequence):
+    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_henger, on_jog_henger, on_qstop, on_auto_sequence):
         self.root = root
         self.root.title("Arduino Robotkar Vezérlés (5-Axis UI)")
         self.root.geometry("580x950")  
@@ -12,8 +12,8 @@ class FelhasznaloiFelulet:
         self.on_home = on_home
         self.on_send = on_send
         self.on_jog = on_jog
-        self.on_send_xyz = on_send_xyz
-        self.on_jog_xyz = on_jog_xyz
+        self.on_send_henger = on_send_henger
+        self.on_jog_henger = on_jog_henger
         self.on_qstop = on_qstop
         self.on_auto_sequence = on_auto_sequence
 
@@ -77,13 +77,13 @@ class FelhasznaloiFelulet:
         self.send_btn = ttk.Button(self.move_frame, text="🚀 Tengelyek Küldése (Azonnali MOVE)", style="Send.TButton", command=self.on_send)
         self.send_btn.grid(row=5, column=1, columnspan=5, pady=10, sticky="ew")
 
-        # 4. Térbeli koordináta panel
-        self.xyz_frame = tk.LabelFrame(self.root, text=" 📐 Térbeli Kartéziánus Pozíció (XYZ mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
+        # 4. Térbeli koordináta panel (hengerkoordináták)
+        self.xyz_frame = tk.LabelFrame(self.root, text=" 📐 Hengerkoordináta Pozíció (R mm, φ fok, Z mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
         self.xyz_frame.pack(fill="x", padx=15, pady=5)
-        self.x_entry = self._xyz_sor_letrehozasa("X:", 0, "118.0")
-        self.y_entry = self._xyz_sor_letrehozasa("Y:", 1, "0.0")
-        self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "51.0")
-        self.xyz_send_btn = ttk.Button(self.xyz_frame, text="🎯 XYZ Pozícióra Küldés", style="XYZ.TButton", command=self.on_send_xyz)
+        self.r_entry = self._xyz_sor_letrehozasa("R:", 0, "118.0", "mm")
+        self.phi_entry = self._xyz_sor_letrehozasa("φ:", 1, "0.0", "°")
+        self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "51.0", "mm")
+        self.xyz_send_btn = ttk.Button(self.xyz_frame, text="🎯 Pozícióra Küldés (Útvonaltervezéssel)", style="XYZ.TButton", command=self.on_send_henger)
         self.xyz_send_btn.grid(row=3, column=1, columnspan=5, pady=10, sticky="ew")
 
         # 5. Queue panel (Az automata pakoló folyamat)
@@ -124,22 +124,22 @@ class FelhasznaloiFelulet:
         self.jog_gombok.extend([btn_n10, btn_n1, btn_p1, btn_p10])
         return entry
 
-    def _xyz_sor_letrehozasa(self, tengely_name, sor_idx, alapert_ert):
+    def _xyz_sor_letrehozasa(self, tengely_name, sor_idx, alapert_ert, egyseg):
         ttk.Label(self.xyz_frame, text=tengely_name).grid(row=sor_idx, column=0, padx=15, pady=12, sticky="e")
         t_id = tengely_name.replace(":", "")
         
-        btn_n10 = ttk.Button(self.xyz_frame, text="-10mm", width=7, style="JogNeg.TButton", command=lambda: self.on_jog_xyz(t_id, -10))
+        btn_n10 = ttk.Button(self.xyz_frame, text=f"-10{egyseg}", width=7, style="JogNeg.TButton", command=lambda: self.on_jog_henger(t_id, -10))
         btn_n10.grid(row=sor_idx, column=1, padx=2)
-        btn_n1 = ttk.Button(self.xyz_frame, text="-1mm", width=6, style="JogNeg.TButton", command=lambda: self.on_jog_xyz(t_id, -1))
+        btn_n1 = ttk.Button(self.xyz_frame, text=f"-1{egyseg}", width=6, style="JogNeg.TButton", command=lambda: self.on_jog_henger(t_id, -1))
         btn_n1.grid(row=sor_idx, column=2, padx=2)
         
         entry = tk.Entry(self.xyz_frame, width=8, font=('Helvetica', 11, 'bold'), bg="#2f3640", fg="#ffa801", insertbackground="white", bd=2, justify="center")
         entry.insert(0, alapert_ert)
         entry.grid(row=sor_idx, column=3, padx=5)
         
-        btn_p1 = ttk.Button(self.xyz_frame, text="+1mm", width=6, style="JogPos.TButton", command=lambda: self.on_jog_xyz(t_id, 1))
+        btn_p1 = ttk.Button(self.xyz_frame, text=f"+1{egyseg}", width=6, style="JogPos.TButton", command=lambda: self.on_jog_henger(t_id, 1))
         btn_p1.grid(row=sor_idx, column=4, padx=2)
-        btn_p10 = ttk.Button(self.xyz_frame, text="+10mm", width=7, style="JogPos.TButton", command=lambda: self.on_jog_xyz(t_id, 10))
+        btn_p10 = ttk.Button(self.xyz_frame, text=f"+10{egyseg}", width=7, style="JogPos.TButton", command=lambda: self.on_jog_henger(t_id, 10))
         btn_p10.grid(row=sor_idx, column=5, padx=2)
         
         if not hasattr(self, 'xyz_jog_gombok'): self.xyz_jog_gombok = []
@@ -157,8 +157,8 @@ class FelhasznaloiFelulet:
         self.j3_entry.config(state=state)
         self.j4_entry.config(state=state)
         self.j5_entry.config(state=state)
-        self.x_entry.config(state=state)
-        self.y_entry.config(state=state)
+        self.r_entry.config(state=state)
+        self.phi_entry.config(state=state)
         self.z_entry.config(state=state)
         for btn in self.jog_gombok: btn.config(state=state)
         for btn in self.xyz_jog_gombok: btn.config(state=state)

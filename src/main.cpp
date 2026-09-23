@@ -237,9 +237,11 @@ void loop() {
           long targetJ3 = input.substring(thirdSpace + 1, fourthSpace).toInt();
           
           int targetJ4, targetJ5;
+          int sixthSpace = (fifthSpace != -1) ? input.indexOf(' ', fifthSpace + 1) : -1;
           if (fifthSpace != -1) {
             targetJ4 = input.substring(fourthSpace + 1, fifthSpace).toInt();
-            targetJ5 = input.substring(fifthSpace + 1).toInt();
+            targetJ5 = (sixthSpace != -1) ? input.substring(fifthSpace + 1, sixthSpace).toInt()
+                                          : input.substring(fifthSpace + 1).toInt();
           } else {
             targetJ4 = input.substring(fourthSpace + 1).toInt();
             targetJ5 = claw_szog; 
@@ -247,6 +249,22 @@ void loop() {
 
           servo_bazis_szog = targetJ4;
           claw_szog = targetJ5; 
+
+          // Motorsebességek: QMOVE ... j4 j5 v1 v2 v3 (lépés/s) -> a motorok együtt haladnak.
+          // Sima MOVE (vagy sebesség nélküli QMOVE) esetén az alap 12000-es sebesség.
+          uint32_t v1 = 12000, v2 = 12000, v3 = 12000;
+          if (isQueue && sixthSpace != -1) {
+            int seventhSpace = input.indexOf(' ', sixthSpace + 1);
+            int eighthSpace = (seventhSpace != -1) ? input.indexOf(' ', seventhSpace + 1) : -1;
+            if (seventhSpace != -1 && eighthSpace != -1) {
+              v1 = constrain(input.substring(sixthSpace + 1, seventhSpace).toInt(), 10, 12000);
+              v2 = constrain(input.substring(seventhSpace + 1, eighthSpace).toInt(), 10, 12000);
+              v3 = constrain(input.substring(eighthSpace + 1).toInt(), 10, 12000);
+            }
+          }
+          stepperX->setSpeedInHz(v1);
+          stepperE->setSpeedInHz(v2);
+          stepperY->setSpeedInHz(v3);
 
           stepperX->moveTo(targetJ1);
           stepperE->moveTo(targetJ2);
