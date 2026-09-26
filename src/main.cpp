@@ -1,7 +1,8 @@
 #include <Arduino.h>
 #include <TMCStepper.h>
 #include <FastAccelStepper.h>
-#include <Servo.h> 
+#include "hardware/pwm.h"     // szervók hardveres PWM-mel (nem terheli a CPU-t, nincs jitter)
+#include "hardware/clocks.h"
 
 // === J4 / J5 SERVO PIN KIOSZTÁSOK ===
 #define SERVO_PIN 29          // J4: Csukló (SERVOS csatlakozó)
@@ -28,6 +29,9 @@
 #define Y_DRIVER_ADDRESS 2  
 #define Y_DIAG_PIN 3        
 
+// === VÉSZLEÁLLÍTÓ GOMB ===
+#define ESTOP_PIN 25        // a gomb GND-re húzza, belső felhúzóval
+
 #define R_SENSE 0.11f
 #define STALL_VALUE 40      
 
@@ -42,11 +46,36 @@ FastAccelStepper *stepperX = NULL; // J1
 FastAccelStepper *stepperY = NULL; // J3
 
 // Szervó objektumok és követő változók
-Servo gripperServo; // J4 Csukló
-Servo clawServo;    // J5 ÚJ Fogó
+// === SZERVÓK: RP2040 HARDVERES PWM ===
+// 50 Hz (20 ms) periódus, 0.5 us felbontás (2 MHz számláló), 500-2500 us = 0-180 fok.
+// A J4 (GPIO 29) és a J5 (GPIO 24) külön PWM szeletre esik, egymást nem zavarják.
+const uint16_t SERVO_PWM_WRAP = 39999;
+
+float fok_to_us(float fok) { return 500.0f + fok * (2000.0f / 180.0f); }
+
+uint16_t us_to_szint(float us) {
+  if (us < 500.0f) us = 500.0f;
+  if (us > 2500.0f) us = 2500.0f;
+  return (uint16_t)lroundf(us * 2.0f);   // 1 számláló lépés = 0.5 us
+}
+
+void servo_pwm_init(uint pin, float kezdo_us) {
+  gpio_set_function(pin, GPIO_FUNC_PWM);
+  uint slice = pwm_gpio_to_slice_num(pin);
+  pwm_config cfg = pwm_get_default_config();
+  pwm_config_set_clkdiv(&cfg, (float)clock_get_hz(clk_sys) / 2000000.0f);  // bármilyen rendszerórajelnél 2 MHz
+  pwm_config_set_wrap(&cfg, SERVO_PWM_WRAP);
+  pwm_init(slice, &cfg, false);
+  pwm_set_gpio_level(pin, us_to_szint(kezdo_us));  // előbb a kitöltés, csak utána indul -> nincs rángás
+  pwm_set_enabled(slice, true);
+}
+
+// Csak egy regiszterírás; a hardver a periódus végén veszi át, így nincs torz impulzus
+void servo_pwm_us(uint pin, float us) { pwm_set_gpio_level(pin, us_to_szint(us)); }
 
 int servo_bazis_szog = 90;       // Pythonból érkező J4 alapérték
 int utolso_kikuldott_szog = -1;  // Puffer a J4-nek
+int utolso_kikuldott_j4_us = -1; // Puffer a J4-nek (PWM szint, 0.5 us egységben)
 
 int claw_szog = 90;              // Pythonból érkező J5 ÚJ alapérték
 int utolso_kikuldott_claw = -1;  // Puffer a J5-nek
@@ -62,6 +91,18 @@ volatile bool y_elakadas_tortent = false;
 unsigned long e_indulas_ms = 0;
 unsigned long x_indulas_ms = 0;
 unsigned long y_indulas_ms = 0;
+
+volatile bool vesz_megnyomva = false;  // az ISR állítja be
+bool vesz_allapot = false;              // a loop kezelte: motorok áramtalanítva, parancsra vár
+bool vesz_qmove_jelezve = false;
+
+// Vészleállító ISR: azonnal leveszi az áramot a motorokról (ENABLE = HIGH, aktív alacsony)
+void __not_in_flash_func(estop_isr)() {
+  digitalWrite(X_ENABLE_PIN, HIGH);
+  digitalWrite(E_ENABLE_PIN, HIGH);
+  digitalWrite(Y_ENABLE_PIN, HIGH);
+  vesz_megnyomva = true;
+}
 
 void __not_in_flash_func(e_stall_isr)() {
   if (millis() - e_indulas_ms > 500) { e_elakadas_tortent = true; }
@@ -118,11 +159,12 @@ void setup() {
   stepperE->enableOutputs(); stepperX->enableOutputs(); stepperY->enableOutputs();
   delay(200);
 
-  gripperServo.attach(SERVO_PIN, 500, 2500); 
-  gripperServo.write(servo_bazis_szog); 
+  pinMode(ESTOP_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ESTOP_PIN), estop_isr, FALLING);
+
+  servo_pwm_init(SERVO_PIN, fok_to_us(servo_bazis_szog));
   
-  clawServo.attach(GRIPPER_SERVO_PIN, 500, 2500); 
-  clawServo.write(claw_szog);
+  servo_pwm_init(GRIPPER_SERVO_PIN, fok_to_us(claw_szog));
   delay(200);
 
   Serial.println("Rendszer kesz. Varom a Python csatlakozast es a Homing parancsot...");
@@ -198,11 +240,11 @@ void futtat_homing() {
   stepperY->moveTo(-6131); 
   
   servo_bazis_szog = 90;
-  gripperServo.write(servo_bazis_szog);
+  servo_pwm_us(SERVO_PIN, fok_to_us(servo_bazis_szog));
   utolso_kikuldott_szog = servo_bazis_szog;
 
   claw_szog = 90; 
-  clawServo.write(claw_szog);
+  servo_pwm_us(GRIPPER_SERVO_PIN, fok_to_us(claw_szog));
   utolso_kikuldott_claw = claw_szog;
 
   while (stepperX->isRunning() || stepperE->isRunning() || stepperY->isRunning()) { delay(10); }
@@ -215,9 +257,38 @@ void futtat_homing() {
 }
 
 void loop() {
+  // === VÉSZLEÁLLÍTÁS KEZELÉSE ===
+  if (vesz_megnyomva && !vesz_allapot) {
+    stepperX->forceStop(); stepperE->forceStop(); stepperY->forceStop();  // lépésgenerálás leállítása
+    stepperX->disableOutputs(); stepperE->disableOutputs(); stepperY->disableOutputs();
+    vesz_allapot = true;
+    vesz_qmove_jelezve = false;
+    Serial.println("VESZLEALLITAS: MOTOROK ARAMTALANITVA. A pozicio elveszett, HOME javasolt.");
+  }
+
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();
+
+    if (input.length() > 0 && vesz_allapot) {
+      if (input.startsWith("QMOVE ")) {
+        // A Python etető még küldhet pár pályapontot: ezek NEM indíthatják újra a kart
+        if (!vesz_qmove_jelezve) { Serial.println("VESZLEALLITAS: QMOVE figyelmen kivul hagyva"); vesz_qmove_jelezve = true; }
+        input = "";
+      } else if (input == "QSTOP") {
+        input = "";  // nincs mit megállítani
+      } else if (digitalRead(ESTOP_PIN) == LOW) {
+        Serial.println("VESZLEALLITAS: A GOMB MEG BE VAN NYOMVA, parancs elutasitva");
+        input = "";
+      } else {
+        // következő parancs (HOME / MOVE): motorok vissza, és végrehajtjuk
+        vesz_megnyomva = false;
+        vesz_allapot = false;
+        stepperX->enableOutputs(); stepperE->enableOutputs(); stepperY->enableOutputs();
+        delay(50);
+        Serial.println("VESZLEALLITAS FELOLDVA: motorok ujra aram alatt");
+      }
+    }
 
     if (input.length() > 0) {
       if (input == "HOME") {
@@ -291,14 +362,16 @@ void loop() {
   // === VALÓS IDEJŰ HARDVERES VÍZSZINT-KOMPENZÁCIÓ ===
   int32_t j3_aktualis_lepes = stepperY->getCurrentPosition();
   float j3_aktualis_fok = (float)j3_aktualis_lepes / STEPS_PER_DEGREE;
-  int korrigalt_j4 = servo_bazis_szog - (int)round(j3_aktualis_fok);
+  // Tört fokkal számolunk, és hardveres PWM-mel 0.5 us (~0.045 fok) felbontással küldjük -> sima követés.
+  float korrigalt_j4 = (float)servo_bazis_szog - j3_aktualis_fok;
 
-  if (korrigalt_j4 < 0) korrigalt_j4 = 0;
-  if (korrigalt_j4 > 180) korrigalt_j4 = 180;
+  if (korrigalt_j4 < 0.0f) korrigalt_j4 = 0.0f;
+  if (korrigalt_j4 > 180.0f) korrigalt_j4 = 180.0f;
 
-  if (korrigalt_j4 != utolso_kikuldott_szog) {
-    gripperServo.write(korrigalt_j4);
-    utolso_kikuldott_szog = korrigalt_j4;
+  int j4_szint = us_to_szint(fok_to_us(korrigalt_j4));
+  if (j4_szint != utolso_kikuldott_j4_us) {
+    pwm_set_gpio_level(SERVO_PIN, (uint16_t)j4_szint);
+    utolso_kikuldott_j4_us = j4_szint;
   }
 
   // === J5 FOGÓ KÖZVETLEN VEZÉRLÉSE ===
@@ -306,7 +379,7 @@ void loop() {
   if (claw_szog > 180) claw_szog = 180;
   
   if (claw_szog != utolso_kikuldott_claw) {
-    clawServo.write(claw_szog);
+    servo_pwm_us(GRIPPER_SERVO_PIN, fok_to_us(claw_szog));
     utolso_kikuldott_claw = claw_szog;
   }
 }

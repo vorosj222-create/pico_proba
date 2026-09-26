@@ -1,6 +1,9 @@
 import tkinter as tk
 from tkinter import messagebox
 import time
+import os
+import sys
+import subprocess
 from soros_kezelo import SorosKezelo
 from inverz_kinematika import InverzKinematika
 from felhasznaloi_felulet import FelhasznaloiFelulet
@@ -44,6 +47,12 @@ class RobotkarAlkalmazas:
     def log_erkezett(self, szoveg):
         if szoveg.startswith("SOR: OK"):
             return  # pályakövetés közben 30 ms-onként jön, ne árassza el a monitort
+        if szoveg.startswith("VESZLEALLITAS: MOTOROK ARAMTALANITVA"):
+            # Hardveres vészleállító: a Python oldali pályaküldést is azonnal leállítjuk
+            self.eteto.leallit()
+            self.root.after(0, lambda: messagebox.showwarning(
+                "Vészleállítás", "A vészleállító gombot megnyomták, a motorok áramtalanítva.\n"
+                                 "A pozíció elveszett: engedd ki a gombot, majd Homing!"))
         self.gui.log_kiiras(szoveg)
         if "STATUSZ" in szoveg or "KESZ" in szoveg or "ALAPHELYZETBEN" in szoveg:
             self.homing_folyamatban = False
@@ -236,8 +245,26 @@ class RobotkarAlkalmazas:
     def esemeny_automatizacio_inditas(self):
         self.automatizacio.futtat_munkafolyamat()
 
+    def _kamera_inditas(self):
+        """A Kamera_nezo.py-t külön folyamatként indítja (a robotkar programjától függetlenül fut)."""
+        kamera_fajl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kamera_nezo.py")
+        if not os.path.exists(kamera_fajl):
+            print(f"[KAMERA] Nem található: {kamera_fajl}")
+            return None
+        try:
+            return subprocess.Popen([sys.executable, kamera_fajl], cwd=os.path.dirname(kamera_fajl))
+        except OSError as e:
+            print(f"[KAMERA] Nem sikerült elindítani: {e}")
+            return None
+
     def inditas(self):
-        self.root.mainloop()
+        kamera = self._kamera_inditas()
+        try:
+            self.root.mainloop()
+        finally:
+            # a robotkar ablakának bezárásakor a kamera is leáll
+            if kamera is not None and kamera.poll() is None:
+                kamera.terminate()
 
 if __name__ == "__main__":
     app = RobotkarAlkalmazas()
