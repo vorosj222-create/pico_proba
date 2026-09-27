@@ -9,6 +9,7 @@ from inverz_kinematika import InverzKinematika
 from felhasznaloi_felulet import FelhasznaloiFelulet
 from automatizacio import KarAutomatizacio 
 from hengerkoordinata import HengerKinematika, UtvonalTervezo, PalyaEteto
+import malom_tabla
 
 class RobotkarAlkalmazas:
     def __init__(self):
@@ -38,10 +39,12 @@ class RobotkarAlkalmazas:
             on_send_henger=self.esemeny_henger_kuldes,
             on_jog_henger=self.esemeny_henger_leptetes,
             on_qstop=self.esemeny_qstop,
-            on_auto_sequence=self.esemeny_automatizacio_inditas
+            on_auto_sequence=self.esemeny_automatizacio_inditas,
+            on_malom_pont=self.esemeny_malom_pont
         )
         
         self._feluleti_ertekek_alaphelyzetbe()
+        self._malom_pontok_betoltese()
         self.gui.portok_frissitese(self.soros.aktiv_portok_lekerese())
 
     def log_erkezett(self, szoveg):
@@ -72,6 +75,39 @@ class RobotkarAlkalmazas:
         self.aktualis_z = 51.0
         self._feluleti_ertekek_alaphelyzetbe()
         self.log_erkezett("[RENDSZER] Felület és memória szinkronizálva a nullaponthoz!\n")
+
+    def _malom_pontok_betoltese(self):
+        """A 8 bemért pontból kiszámolja a 24 malompontot, és jelzi, ha valami gyanús."""
+        self.malom_pontok = malom_tabla.malom_pontok_szamitasa()
+        for p, e in malom_tabla.ellenorzes().items():
+            if e > 8.0:
+                self.log_erkezett(f"[MALOM FIGYELEM] A(z) {p}. bemért pont {e:.0f} mm-re esik a szabályos "
+                                  f"táblától - elírás vagy felcserélt pont? (malom_tabla.py)\n")
+        for p, (r, phi, z) in self.malom_pontok.items():
+            if (self.henger.henger_to_lepes(r, phi, z) is None or
+                    self.henger.henger_to_lepes(r, phi, malom_tabla.FELSO_Z) is None):
+                self.log_erkezett(f"[MALOM FIGYELEM] A(z) {p}. pont (r={r:.0f}, φ={phi:.1f}) nem elérhető!\n")
+
+    def esemeny_malom_pont(self):
+        """A kart a megadott malomponthoz viszi: felemelkedik, átmegy fölé, majd leereszkedik."""
+        if self.homing_folyamatban: return
+        try:
+            pont = int(self.gui.malom_spin.get())
+            j4 = int(self.gui.j4_entry.get())
+            j5 = int(self.gui.j5_entry.get())
+        except ValueError:
+            messagebox.showwarning("Hiba", "A pont száma 0 és 23 közötti egész szám legyen!")
+            return
+        if not 0 <= pont <= 23:
+            messagebox.showwarning("Hiba", "A pont száma 0 és 23 közötti egész szám legyen!")
+            return
+        r, phi, z = self.malom_pontok[pont]
+        z_fent = max(self.aktualis_z, malom_tabla.FELSO_Z)   # ha már fentebb van, nem ereszkedik előbb
+        utvonal = [(self.aktualis_r, self.aktualis_phi, z_fent),   # 1. fel a biztonsági magasságba
+                   (r, phi, z_fent),                                  # 2. a pont fölé
+                   (r, phi, z)]                                       # 3. le a pontra
+        self.log_erkezett(f"[MALOM] Mozgás a(z) {pont}. ponthoz: r={r:.1f} φ={phi:.1f} z={z:.1f}\n")
+        self.mozgas_utvonalon(utvonal, j4, j5)
 
     def _henger_mezok_kiirasa(self, r, phi, z):
         self.gui.r_entry.delete(0, tk.END); self.gui.r_entry.insert(0, f"{r:.1f}")
