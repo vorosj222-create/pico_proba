@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 import time
+import threading
 import os
 import sys
 import subprocess
@@ -21,6 +22,7 @@ class RobotkarAlkalmazas:
         self.aktualis_phi = 0.0
         self.aktualis_z = 51.0
         self.homing_folyamatban = False
+        self.kamera = None   # a Kamera_nezo.py folyamata (inditas() állítja be)
         
         self.soros = SorosKezelo(log_callback=self.log_erkezett)
         self.kinematika = InverzKinematika()
@@ -40,7 +42,9 @@ class RobotkarAlkalmazas:
             on_jog_henger=self.esemeny_henger_leptetes,
             on_qstop=self.esemeny_qstop,
             on_auto_sequence=self.esemeny_automatizacio_inditas,
-            on_malom_pont=self.esemeny_malom_pont
+            on_malom_pont=self.esemeny_malom_pont,
+            on_babu_athelyezes=self.esemeny_babu_athelyezes,
+            on_kamera_kalibracio=self.esemeny_kamera_kalibracio
         )
         
         self._feluleti_ertekek_alaphelyzetbe()
@@ -56,8 +60,14 @@ class RobotkarAlkalmazas:
             self.root.after(0, lambda: messagebox.showwarning(
                 "Vészleállítás", "A vészleállító gombot megnyomták, a motorok áramtalanítva.\n"
                                  "A pozíció elveszett: engedd ki a gombot, majd Homing!"))
-        self.gui.log_kiiras(szoveg)
-        if "STATUSZ" in szoveg or "KESZ" in szoveg or "ALAPHELYZETBEN" in szoveg:
+        if threading.current_thread() is threading.main_thread():
+            self.gui.log_kiiras(szoveg)
+        else:
+            # háttérszálból (soros port, kamera, mozgás) a kiírás a fő szálon történjen
+            self.root.after(0, self.gui.log_kiiras, szoveg)
+        # A homing csak a legvégén érkező "STATUSZ: ALAPHELYZETBEN" üzenettel ér véget
+        # (az egyes tengelyek "... HOMING KESZ" üzenete még nem jelenti a teljes homing végét)
+        if "ALAPHELYZETBEN" in szoveg:
             self.homing_folyamatban = False
 
     def _feluleti_ertekek_alaphelyzetbe(self):
@@ -85,7 +95,7 @@ class RobotkarAlkalmazas:
                                   f"táblától - elírás vagy felcserélt pont? (malom_tabla.py)\n")
         for p, (r, phi, z) in self.malom_pontok.items():
             if (self.henger.henger_to_lepes(r, phi, z) is None or
-                    self.henger.henger_to_lepes(r, phi, malom_tabla.FELSO_Z) is None):
+                    self.henger.henger_to_lepes(r, phi, malom_tabla.FELSO_Z + malom_tabla.KANYAR_MM) is None):
                 self.log_erkezett(f"[MALOM FIGYELEM] A(z) {p}. pont (r={r:.0f}, φ={phi:.1f}) nem elérhető!\n")
 
     def esemeny_malom_pont(self):
@@ -96,18 +106,98 @@ class RobotkarAlkalmazas:
             j4 = int(self.gui.j4_entry.get())
             j5 = int(self.gui.j5_entry.get())
         except ValueError:
-            messagebox.showwarning("Hiba", "A pont száma 0 és 23 közötti egész szám legyen!")
+            messagebox.showwarning("Hiba", "A pont száma 0 és 41 közötti egész szám legyen (24-41: tartalék helyek)!")
             return
-        if not 0 <= pont <= 23:
-            messagebox.showwarning("Hiba", "A pont száma 0 és 23 közötti egész szám legyen!")
+        if pont not in self.malom_pontok:
+            messagebox.showwarning("Hiba", "A pont száma 0 és 41 közötti egész szám legyen (24-41: tartalék helyek)!")
+            return
+        if self.eteto.foglalt():
+            self.log_erkezett("[FIGYELEM] Mozgás folyamatban, várd meg a végét vagy QSTOP!\n")
             return
         r, phi, z = self.malom_pontok[pont]
-        z_fent = max(self.aktualis_z, malom_tabla.FELSO_Z)   # ha már fentebb van, nem ereszkedik előbb
-        utvonal = [(self.aktualis_r, self.aktualis_phi, z_fent),   # 1. fel a biztonsági magasságba
-                   (r, phi, z_fent),                                  # 2. a pont fölé
-                   (r, phi, z)]                                       # 3. le a pontra
         self.log_erkezett(f"[MALOM] Mozgás a(z) {pont}. ponthoz: r={r:.1f} φ={phi:.1f} z={z:.1f}\n")
-        self.mozgas_utvonalon(utvonal, j4, j5)
+        self.eteto.uj_mozgas()
+        self.eteto.lefoglalva = True
+
+        def folyamat():
+            try:
+                if not self._ponthoz_megy(pont, z, j4, j5):
+                    self.log_erkezett("[MALOM] Mozgás megszakítva.\n")
+            finally:
+                self.eteto.lefoglalva = False
+        threading.Thread(target=folyamat, daemon=True).start()
+
+    def _ponthoz_megy(self, pont, z_lent, j4, j5):
+        """
+        Blokkoló: fel, át a pont fölé, le z_lent-re - egyetlen, lekerekített, megállás nélküli pályán.
+        A kar FELSO_Z + KANYAR_MM magasan halad, a sarkokat pedig legfeljebb KANYAR_MM-rel kerekíti le,
+        így a kanyar a ponton kívül sosem viszi FELSO_Z alá (a lekerekítés legfeljebb ennyit vág le).
+        """
+        utvonal = self._pont_feletti_utvonal(pont) + [(*self.malom_pontok[pont][:2], z_lent)]
+        return self.mozgas_utvonalon(utvonal, j4, j5, blokkolo=True, lekerekites_mm=malom_tabla.KANYAR_MM)
+
+    def _pont_feletti_utvonal(self, pont):
+        """
+        A haladási magasságba (FELSO_Z + KANYAR_MM), majd a pont fölé. Mindig ezen a magasságon halad
+        akkor is, ha a kar éppen magasabban áll: magasan a kar rövidebbre ér el, így pl. az
+        alaphelyzetből (z=51) a távoli pontok (pl. 23) fölé nem lehetne átmenni.
+        """
+        r, phi, _ = self.malom_pontok[pont]
+        z_fent = malom_tabla.FELSO_Z + malom_tabla.KANYAR_MM
+        return [(self.aktualis_r, self.aktualis_phi, z_fent), (r, phi, z_fent)]
+
+    def esemeny_babu_athelyezes(self):
+        """Bábu áthelyezése: honnan fölé, fogó nyit, le, fogó zár, hová (fel-át-le), fogó nyit."""
+        if self.homing_folyamatban: return
+        if self.eteto.foglalt():
+            self.log_erkezett("[FIGYELEM] Mozgás folyamatban, várd meg a végét vagy QSTOP!\n")
+            return
+        try:
+            honnan = int(self.gui.babu_honnan_spin.get())
+            hova = int(self.gui.babu_hova_spin.get())
+            j4 = int(self.gui.j4_entry.get())
+            j5 = int(self.gui.j5_entry.get())
+        except ValueError:
+            messagebox.showwarning("Hiba", "A pontok száma 0 és 41 közötti egész szám legyen (24-41: tartalék helyek)!")
+            return
+        if honnan not in self.malom_pontok or hova not in self.malom_pontok or honnan == hova:
+            messagebox.showwarning("Hiba", "Két különböző, 0 és 41 közötti pontot adj meg (24-41: tartalék helyek)!")
+            return
+        self.eteto.uj_mozgas()
+        self.eteto.lefoglalva = True
+        threading.Thread(target=self._babu_athelyezes_folyamat, args=(honnan, hova, j4, j5), daemon=True).start()
+
+    def _babu_athelyezes_folyamat(self, honnan, hova, j4, j5):
+        try:
+            self.log_erkezett(f"[BÁBU] Áthelyezés: {honnan} -> {hova}\n")
+            # 1. a "honnan" pont fölé (fel a biztonsági magasságba, majd át)
+            r, phi, _ = self.malom_pontok[honnan]
+            if not self.mozgas_utvonalon(self._pont_feletti_utvonal(honnan), j4, j5, blokkolo=True,
+                                         lekerekites_mm=malom_tabla.KANYAR_MM): return self._babu_megszakitva()
+            # 2. fogó nyit
+            if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
+            # 3. le a bábuhoz
+            if not self.mozgas_utvonalon([(r, phi, malom_tabla.BABU_Z)], j4, malom_tabla.CLAW_NYITVA, blokkolo=True): return self._babu_megszakitva()
+            # 4. fogó zár (megfogás)
+            if not self._fogo_allitas(j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
+            # 5. fel, át a "hová" pont fölé, le (lekerekítve, a pontok között sosem megy FELSO_Z alá)
+            if not self._ponthoz_megy(hova, malom_tabla.BABU_Z, j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
+            # 6. fogó nyit (elengedés)
+            if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
+            self.log_erkezett(f"[BÁBU] Kész: {honnan} -> {hova}\n")
+        finally:
+            self.eteto.lefoglalva = False
+
+    def _babu_megszakitva(self):
+        self.log_erkezett("[BÁBU] Áthelyezés megszakítva.\n")
+
+    def _fogo_allitas(self, j4, j5):
+        """Csak a fogót (J5) állítja, a kar helyben marad; utána vár. False, ha közben QSTOP jött."""
+        steps = self.henger.henger_to_lepes(self.aktualis_r, self.aktualis_phi, self.aktualis_z)
+        if steps is None or not self.eteto.kuld(f"MOVE {steps[0]} {steps[1]} {steps[2]} {j4} {j5}"):
+            return False
+        self.root.after(0, lambda: (self.gui.j5_entry.delete(0, tk.END), self.gui.j5_entry.insert(0, str(j5))))
+        return not self.eteto._stop.wait(malom_tabla.CLAW_VARAKOZAS)
 
     def _henger_mezok_kiirasa(self, r, phi, z):
         self.gui.r_entry.delete(0, tk.END); self.gui.r_entry.insert(0, f"{r:.1f}")
@@ -124,7 +214,7 @@ class RobotkarAlkalmazas:
         self.aktualis_r, self.aktualis_phi, self.aktualis_z = r, phi, z
         self._henger_mezok_kiirasa(r, phi, z)
 
-    def mozgas_utvonalon(self, pontok, j4, j5, blokkolo=False):
+    def mozgas_utvonalon(self, pontok, j4, j5, blokkolo=False, lekerekites_mm=None):
         """
         pontok: célpontok hengerkoordinátában [(r, phi, z), ...]; a jelenlegi pozícióból indul.
         blokkolo=True: a hívó szálán fut (automatizáció), különben háttérszálon.
@@ -136,7 +226,7 @@ class RobotkarAlkalmazas:
         if not blokkolo:
             self.eteto.uj_mozgas()
         start = (self.aktualis_r, self.aktualis_phi, self.aktualis_z)
-        mintak, hiba = self.tervezo.tervez([start] + list(pontok))
+        mintak, hiba = self.tervezo.tervez([start] + list(pontok), lekerekites_mm=lekerekites_mm)
         if mintak is None:
             self.root.after(0, lambda: messagebox.showwarning("Munkatéren kívül", hiba))
             self.log_erkezett(f"[HIBA] {hiba}\n")
@@ -282,25 +372,95 @@ class RobotkarAlkalmazas:
         self.automatizacio.futtat_munkafolyamat()
 
     def _kamera_inditas(self):
-        """A Kamera_nezo.py-t külön folyamatként indítja (a robotkar programjától függetlenül fut)."""
+        """
+        A Kamera_nezo.py-t külön folyamatként indítja. A bemenetén (stdin) kap parancsot
+        (pl. KALIBRALAS), a kimenetét (stdout) egy háttérszál olvassa és a soros monitorra írja.
+        """
         kamera_fajl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Kamera_nezo.py")
         if not os.path.exists(kamera_fajl):
             print(f"[KAMERA] Nem található: {kamera_fajl}")
             return None
+        kornyezet = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         try:
-            return subprocess.Popen([sys.executable, kamera_fajl], cwd=os.path.dirname(kamera_fajl))
+            folyamat = subprocess.Popen([sys.executable, kamera_fajl], cwd=os.path.dirname(kamera_fajl),
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, encoding="utf-8", errors="replace", bufsize=1, env=kornyezet)
         except OSError as e:
             print(f"[KAMERA] Nem sikerült elindítani: {e}")
             return None
+        threading.Thread(target=self._kamera_kimenet_olvaso, args=(folyamat,), daemon=True).start()
+        return folyamat
+
+    def _kamera_kimenet_olvaso(self, folyamat):
+        """A kamera üzeneteit a soros monitorra írja; a kalibráció eredményét felugró ablakban is jelzi."""
+        for sor in folyamat.stdout:
+            sor = sor.rstrip()
+            if not sor:
+                continue
+            if sor.startswith("KALIBRACIO_OK"):
+                szoveg = sor[len("KALIBRACIO_OK"):].strip()
+                self.log_erkezett(f"[KAMERA] Kalibráció kész. Illeszkedés: {szoveg}\n")
+                self.root.after(0, lambda t=szoveg: messagebox.showinfo("Kamera kalibráció", f"Kalibráció kész.\nIlleszkedés: {t}"))
+            elif sor.startswith("KALIBRACIO_HIBA"):
+                szoveg = sor[len("KALIBRACIO_HIBA"):].strip()
+                self.log_erkezett(f"[KAMERA HIBA] Kalibráció sikertelen: {szoveg}\n")
+                self.root.after(0, lambda t=szoveg: messagebox.showwarning("Kamera kalibráció", f"Kalibráció sikertelen:\n{t}"))
+            else:
+                self.log_erkezett(f"[KAMERA] {sor}\n")
+        self.log_erkezett("[KAMERA] A kamera program leállt.\n")
+
+    def kamera_parancs(self, parancs):
+        """Parancs küldése a kamera programnak. False, ha a kamera nem fut."""
+        if self.kamera is None or self.kamera.poll() is not None:
+            return False
+        try:
+            self.kamera.stdin.write(parancs + "\n")
+            self.kamera.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def esemeny_kamera_kalibracio(self):
+        """A kart kiviszi a képből, majd a kamerával megjegyezteti a 24 malompont pixelhelyét."""
+        if self.homing_folyamatban: return
+        if self.kamera is None or self.kamera.poll() is not None:
+            messagebox.showwarning("Kamera kalibráció", "A kamera program nem fut!")
+            return
+        if self.eteto.foglalt():
+            self.log_erkezett("[FIGYELEM] Mozgás folyamatban, várd meg a végét vagy QSTOP!\n")
+            return
+        try:
+            j4 = int(self.gui.j4_entry.get())
+            j5 = int(self.gui.j5_entry.get())
+        except ValueError:
+            return
+        self.eteto.uj_mozgas()
+        self.eteto.lefoglalva = True
+
+        def folyamat():
+            try:
+                self.log_erkezett("[KAMERA] Kalibráció: a kar kiáll a képből...\n")
+                if not self.mozgas_utvonalon([malom_tabla.KALIBRACIOS_POZICIO], j4, j5, blokkolo=True):
+                    self.log_erkezett("[KAMERA] Kalibráció megszakítva (a kar nem ért oda).\n")
+                    return
+                if self.eteto._stop.wait(0.5):      # rezgés lecsengése; QSTOP-ra megszakad
+                    return
+                if self.kamera_parancs("KALIBRALAS"):
+                    self.log_erkezett("[KAMERA] Pontok keresése a kamerában...\n")
+                else:
+                    self.log_erkezett("[KAMERA HIBA] A kamera program nem fut!\n")
+            finally:
+                self.eteto.lefoglalva = False
+        threading.Thread(target=folyamat, daemon=True).start()
 
     def inditas(self):
-        kamera = self._kamera_inditas()
+        self.kamera = self._kamera_inditas()
         try:
             self.root.mainloop()
         finally:
             # a robotkar ablakának bezárásakor a kamera is leáll
-            if kamera is not None and kamera.poll() is None:
-                kamera.terminate()
+            if self.kamera is not None and self.kamera.poll() is None:
+                self.kamera.terminate()
 
 if __name__ == "__main__":
     app = RobotkarAlkalmazas()

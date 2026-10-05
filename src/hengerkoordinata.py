@@ -97,7 +97,7 @@ class UtvonalTervezo:
     def _hossz(v):
         return math.sqrt(sum(x * x for x in v))
 
-    def _geometriai_pontok(self, pontok):
+    def _geometriai_pontok(self, pontok, lekerekites_mm=None):
         """Töréspontos pálya sűrű mintavételezése, a töréspontokon másodfokú Bézier-ívvel."""
         q = [self._q(p) for p in pontok]
         # egymást követő azonos pontok kiszűrése
@@ -115,7 +115,8 @@ class UtvonalTervezo:
         for i in range(1, len(q) - 1):
             be = self._kul(q[i], q[i - 1]); ki = self._kul(q[i + 1], q[i])
             lb, lk = self._hossz(be), self._hossz(ki)
-            d = min(self.LEKEREKITES_MAX_MM, 0.5 * lb, 0.5 * lk)
+            kanyar = self.LEKEREKITES_MAX_MM if lekerekites_mm is None else lekerekites_mm
+            d = min(kanyar, 0.5 * lb, 0.5 * lk)
             a = tuple(q[i][j] - be[j] / lb * d for j in range(3))
             b = tuple(q[i][j] + ki[j] / lk * d for j in range(3))
             darabok.append(("egyenes", eleje, a))
@@ -142,14 +143,14 @@ class UtvonalTervezo:
         return [self._p(m) for m in minta]
 
     # ---------- tervezés ----------
-    def tervez(self, pontok, max_fogo_seb=None):
+    def tervez(self, pontok, max_fogo_seb=None, lekerekites_mm=None):
         """
         pontok: [(r, phi, z), ...] legalább 2 pont (az első a jelenlegi pozíció).
         Visszatér: (mintak, hiba) ahol mintak = [(j1, j2, j3), ...] DT időközönként.
         Ha valamelyik pálya pont nem elérhető, mintak = None és hiba a szöveges ok.
         """
         v_fogo = max_fogo_seb if max_fogo_seb else self.MAX_FOGO_SEB
-        geo = self._geometriai_pontok(pontok)
+        geo = self._geometriai_pontok(pontok, lekerekites_mm)
 
         lepesek = []
         for p in geo:

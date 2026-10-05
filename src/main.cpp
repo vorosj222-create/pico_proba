@@ -170,7 +170,28 @@ void setup() {
   Serial.println("Rendszer kesz. Varom a Python csatlakozast es a Homing parancsot...");
 }
 void futtat_homing() {
-  // FÁZIS 1: J3 (Y SLOT) ÖNÁLLÓ HOMING
+  // FÁZIS 1: J1 (X MOTOR) STANDARD HOMING (elsőként)
+  Serial.println("\n[J1 / X] 1. Fazis: Biztonsagi tavolodas...");
+  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN)); 
+  stepperX->moveTo(-BACKOFF_STEPS);
+  while (stepperX->isRunning()) { delay(10); }
+  delay(200);
+  Serial.println("\n[J1 / X] 2. Fazis: Kereses az utkozo fele...");
+  x_elakadas_tortent = false; x_indulas_ms = millis(); 
+  attachInterrupt(digitalPinToInterrupt(X_DIAG_PIN), x_stall_isr, RISING);
+  stepperX->moveTo(STEPS_PER_360_DEG);
+  while (!x_elakadas_tortent && stepperX->isRunning()) { delay(5); }
+  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN));
+  int32_t x_stop_pos = stepperX->getPositionAfterCommandsCompleted();
+  stepperX->forceStopAndNewPosition(x_stop_pos);
+  delay(100);
+  stepperX->moveTo(x_stop_pos - 400);
+  while (stepperX->isRunning()) { delay(10); }
+  stepperX->setCurrentPosition(0);
+  Serial.println("=== J1 HOMING KESZ ===");
+  delay(500);
+
+  // FÁZIS 2: J3 (Y SLOT) ÖNÁLLÓ HOMING
   Serial.println("\n[J3 / Y] 1. Fazis: Biztonsagi tavolodas az utkozotol...");
   detachInterrupt(digitalPinToInterrupt(Y_DIAG_PIN)); 
   stepperY->moveTo(-BACKOFF_STEPS);
@@ -191,7 +212,7 @@ void futtat_homing() {
   Serial.println("=== J3 HOMING KESZ ===");
   delay(500);
 
-  // FÁZIS 2: J2 (E MOTOR) STANDARD HOMING
+  // FÁZIS 3: J2 (E MOTOR) STANDARD HOMING (utolsóként)
   Serial.println("\n[J2 / E] 1. Fazis: Biztonsagi tavolodas...");
   detachInterrupt(digitalPinToInterrupt(E_DIAG_PIN)); 
   stepperE->moveTo(-BACKOFF_STEPS);
@@ -210,27 +231,6 @@ void futtat_homing() {
   while (stepperE->isRunning()) { delay(10); }
   stepperE->setCurrentPosition(0);
   Serial.println("=== J2 HOMING KESZ ===");
-  delay(500);
-
-  // FÁZIS 3: J1 (X MOTOR) STANDARD HOMING
-  Serial.println("\n[J1 / X] 1. Fazis: Biztonsagi tavolodas...");
-  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN)); 
-  stepperX->moveTo(-BACKOFF_STEPS);
-  while (stepperX->isRunning()) { delay(10); }
-  delay(200);
-  Serial.println("\n[J1 / X] 2. Fazis: Kereses az utkozo fele...");
-  x_elakadas_tortent = false; x_indulas_ms = millis(); 
-  attachInterrupt(digitalPinToInterrupt(X_DIAG_PIN), x_stall_isr, RISING);
-  stepperX->moveTo(STEPS_PER_360_DEG);
-  while (!x_elakadas_tortent && stepperX->isRunning()) { delay(5); }
-  detachInterrupt(digitalPinToInterrupt(X_DIAG_PIN));
-  int32_t x_stop_pos = stepperX->getPositionAfterCommandsCompleted();
-  stepperX->forceStopAndNewPosition(x_stop_pos);
-  delay(100);
-  stepperX->moveTo(x_stop_pos - 400);
-  while (stepperX->isRunning()) { delay(10); }
-  stepperX->setCurrentPosition(0);
-  Serial.println("=== J1 HOMING KESZ ===");
   delay(500);
 
   // FÁZIS 4: VÉGLEGES CÉLRAÁLLÁS ÉS EZUTÁN ENNEK A NULLÁZÁSA

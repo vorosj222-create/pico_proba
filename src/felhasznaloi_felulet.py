@@ -2,10 +2,10 @@ import tkinter as tk
 from tkinter import ttk
 
 class FelhasznaloiFelulet:
-    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_henger, on_jog_henger, on_qstop, on_auto_sequence, on_malom_pont=None):
+    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_henger, on_jog_henger, on_qstop, on_auto_sequence, on_malom_pont=None, on_babu_athelyezes=None, on_kamera_kalibracio=None):
         self.root = root
         self.root.title("Arduino Robotkar Vezérlés (5-Axis UI)")
-        self.root.geometry("580x1020")  
+        self.root.geometry("830x950")  
         self.root.configure(bg="#1e272e")
         
         self.on_connect = on_connect
@@ -17,6 +17,8 @@ class FelhasznaloiFelulet:
         self.on_qstop = on_qstop
         self.on_auto_sequence = on_auto_sequence
         self.on_malom_pont = on_malom_pont
+        self.on_babu_athelyezes = on_babu_athelyezes
+        self.on_kamera_kalibracio = on_kamera_kalibracio
 
         self._stilusok_beallitasa()
         self._panelek_letrehozasa()
@@ -64,7 +66,9 @@ class FelhasznaloiFelulet:
         self.home_frame = tk.LabelFrame(self.root, text=" 🏠 Kalibráció ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         self.home_frame.pack(fill="x", padx=15, pady=5)
         self.home_btn = ttk.Button(self.home_frame, text="🤖 HOMING (Nullázás) INDÍTÁSA", style="Home.TButton", command=self.on_home)
-        self.home_btn.pack(fill="x", padx=15, pady=10)
+        self.home_btn.pack(side="left", fill="x", expand=True, padx=(15, 5), pady=10)
+        self.kamera_kal_btn = ttk.Button(self.home_frame, text="📷 KAMERA KALIBRÁCIÓ", style="XYZ.TButton", command=self.on_kamera_kalibracio)
+        self.kamera_kal_btn.pack(side="left", fill="x", expand=True, padx=(5, 15), pady=10)
         # 3. Pozíció és léptető panel (J1-J5 gombok)
         self.move_frame = tk.LabelFrame(self.root, text=" 🕹️ Pozíció Vezérlés (Lépések és Fokok) ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         self.move_frame.pack(fill="x", padx=15, pady=5)
@@ -78,24 +82,36 @@ class FelhasznaloiFelulet:
         self.send_btn = ttk.Button(self.move_frame, text="🚀 Tengelyek Küldése (Azonnali MOVE)", style="Send.TButton", command=self.on_send)
         self.send_btn.grid(row=5, column=1, columnspan=5, pady=10, sticky="ew")
 
-        # 4. Térbeli koordináta panel (hengerkoordináták)
-        self.xyz_frame = tk.LabelFrame(self.root, text=" 📐 Hengerkoordináta Pozíció (R mm, φ fok, Z mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
-        self.xyz_frame.pack(fill="x", padx=15, pady=5)
+        # 4. Pozíció sor: balra a hengerkoordináta panel, jobbra mellette a malom panel
+        pozicio_sor = tk.Frame(self.root, bg="#1e272e")
+        pozicio_sor.pack(fill="x", padx=15, pady=5)
+
+        # 4/a. Térbeli koordináta panel (hengerkoordináták)
+        self.xyz_frame = tk.LabelFrame(pozicio_sor, text=" 📐 Hengerkoordináta Pozíció (R mm, φ fok, Z mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
+        self.xyz_frame.pack(side="left", fill="both", expand=True)
         self.r_entry = self._xyz_sor_letrehozasa("R:", 0, "118.0", "mm")
         self.phi_entry = self._xyz_sor_letrehozasa("φ:", 1, "0.0", "°")
         self.z_entry = self._xyz_sor_letrehozasa("Z:", 2, "51.0", "mm")
         self.xyz_send_btn = ttk.Button(self.xyz_frame, text="🎯 Pozícióra Küldés (Útvonaltervezéssel)", style="XYZ.TButton", command=self.on_send_henger)
         self.xyz_send_btn.grid(row=3, column=1, columnspan=5, pady=10, sticky="ew")
 
-        # 4/b. Malom pont panel: a kar a megadott malomponthoz (0-23) megy
-        self.malom_frame = tk.LabelFrame(self.root, text=" ♟️ Malom Pont (0-23, a játék számozása szerint) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
-        self.malom_frame.pack(fill="x", padx=15, pady=5)
-        ttk.Label(self.malom_frame, text="Pont:").grid(row=0, column=0, padx=15, pady=10, sticky="e")
-        self.malom_spin = tk.Spinbox(self.malom_frame, from_=0, to=23, width=5, justify="center", font=('Helvetica', 11, 'bold'))
-        self.malom_spin.grid(row=0, column=1, padx=5, pady=10)
+        # 4/b. Malom panel (a pozíció panel mellett): kar a ponthoz, bábu áthelyezése
+        self.malom_frame = tk.LabelFrame(pozicio_sor, text=" ♟️ Malom (tábla 0-23, tartalék 24-41) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
+        self.malom_frame.pack(side="left", fill="both", padx=(10, 0))
+        ttk.Label(self.malom_frame, text="Pont:").grid(row=0, column=0, padx=(10, 5), pady=(12, 5), sticky="e")
+        self.malom_spin = tk.Spinbox(self.malom_frame, from_=0, to=41, width=4, justify="center", font=('Helvetica', 11, 'bold'))
+        self.malom_spin.grid(row=0, column=1, columnspan=3, padx=(0, 10), pady=(12, 5), sticky="w")
         self.malom_btn = ttk.Button(self.malom_frame, text="🎯 Kar a ponthoz", style="XYZ.TButton", command=self.on_malom_pont)
-        self.malom_btn.grid(row=0, column=2, padx=15, pady=10, sticky="ew")
-        self.malom_frame.columnconfigure(2, weight=1)
+        self.malom_btn.grid(row=1, column=0, columnspan=4, padx=10, pady=(0, 15), sticky="ew")
+        # bábu áthelyezése: honnan -> hová
+        ttk.Label(self.malom_frame, text="Bábu:").grid(row=2, column=0, padx=(10, 5), pady=5, sticky="e")
+        self.babu_honnan_spin = tk.Spinbox(self.malom_frame, from_=0, to=41, width=4, justify="center", font=('Helvetica', 11, 'bold'))
+        self.babu_honnan_spin.grid(row=2, column=1, pady=5)
+        ttk.Label(self.malom_frame, text="→").grid(row=2, column=2, padx=4, pady=5)
+        self.babu_hova_spin = tk.Spinbox(self.malom_frame, from_=0, to=41, width=4, justify="center", font=('Helvetica', 11, 'bold'))
+        self.babu_hova_spin.grid(row=2, column=3, padx=(0, 10), pady=5)
+        self.babu_btn = ttk.Button(self.malom_frame, text="♟️ Bábu áthelyezése", style="XYZ.TButton", command=self.on_babu_athelyezes)
+        self.babu_btn.grid(row=3, column=0, columnspan=4, padx=10, pady=(0, 10), sticky="ew")
 
         # 5. Queue panel (Az automata pakoló folyamat)
         self.queue_frame = tk.LabelFrame(self.root, text=" ⛓️ Queue (Sor) Folyamatos Etetés ", bg="#1e272e", fg="#ffdd59", font=('Helvetica', 10, 'bold'), bd=2)
@@ -159,10 +175,14 @@ class FelhasznaloiFelulet:
 
     def set_controls_state(self, state):
         self.home_btn.config(state=state)
+        self.kamera_kal_btn.config(state=state)
         self.send_btn.config(state=state)
         self.xyz_send_btn.config(state=state)
         self.malom_btn.config(state=state)
         self.malom_spin.config(state=state)
+        self.babu_btn.config(state=state)
+        self.babu_honnan_spin.config(state=state)
+        self.babu_hova_spin.config(state=state)
         self.auto_btn.config(state=state)
         self.qstop_btn.config(state=state)
         self.j1_entry.config(state=state)
