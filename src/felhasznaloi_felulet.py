@@ -2,10 +2,10 @@ import tkinter as tk
 from tkinter import ttk
 
 class FelhasznaloiFelulet:
-    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_henger, on_jog_henger, on_qstop, on_auto_sequence, on_malom_pont=None, on_babu_athelyezes=None, on_kamera_kalibracio=None):
+    def __init__(self, root, on_connect, on_home, on_send, on_jog, on_send_henger, on_jog_henger, on_qstop, on_auto_sequence, on_malom_pont=None, on_babu_athelyezes=None, on_kamera_kalibracio=None, on_malom_inditas=None):
         self.root = root
         self.root.title("Arduino Robotkar Vezérlés (5-Axis UI)")
-        self.root.geometry("830x950")  
+        self.root.geometry("1350x800")  
         self.root.configure(bg="#1e272e")
         
         self.on_connect = on_connect
@@ -19,6 +19,7 @@ class FelhasznaloiFelulet:
         self.on_malom_pont = on_malom_pont
         self.on_babu_athelyezes = on_babu_athelyezes
         self.on_kamera_kalibracio = on_kamera_kalibracio
+        self.on_malom_inditas = on_malom_inditas
 
         self._stilusok_beallitasa()
         self._panelek_letrehozasa()
@@ -68,10 +69,16 @@ class FelhasznaloiFelulet:
         self.home_btn = ttk.Button(self.home_frame, text="🤖 HOMING (Nullázás) INDÍTÁSA", style="Home.TButton", command=self.on_home)
         self.home_btn.pack(side="left", fill="x", expand=True, padx=(15, 5), pady=10)
         self.kamera_kal_btn = ttk.Button(self.home_frame, text="📷 KAMERA KALIBRÁCIÓ", style="XYZ.TButton", command=self.on_kamera_kalibracio)
-        self.kamera_kal_btn.pack(side="left", fill="x", expand=True, padx=(5, 15), pady=10)
+        self.kamera_kal_btn.pack(side="left", fill="x", expand=True, padx=5, pady=10)
+        self.malom_inditas_btn = ttk.Button(self.home_frame, text="♟️ MALOM!", style="XYZ.TButton", command=self.on_malom_inditas)
+        self.malom_inditas_btn.pack(side="left", fill="x", expand=True, padx=(5, 15), pady=10)
         # 3. Pozíció és léptető panel (J1-J5 gombok)
-        self.move_frame = tk.LabelFrame(self.root, text=" 🕹️ Pozíció Vezérlés (Lépések és Fokok) ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
-        self.move_frame.pack(fill="x", padx=15, pady=5)
+        # Vezérlő sor: a csuklónkénti, a hengerkoordinátás és a malom panel egymás mellett
+        # (így az ablak alacsonyabb, kifér a monitoron)
+        vezerlo_sor = tk.Frame(self.root, bg="#1e272e")
+        vezerlo_sor.pack(fill="x", padx=15, pady=5)
+        self.move_frame = tk.LabelFrame(vezerlo_sor, text=" 🕹️ Pozíció Vezérlés (Lépések és Fokok) ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
+        self.move_frame.pack(side="left", fill="both", padx=(0, 10))
         
         self.j1_entry = self._motor_sor_letrehozasa("J1 (X):", 0, "0")
         self.j2_entry = self._motor_sor_letrehozasa("J2 (E):", 1, "0")
@@ -83,8 +90,7 @@ class FelhasznaloiFelulet:
         self.send_btn.grid(row=5, column=1, columnspan=5, pady=10, sticky="ew")
 
         # 4. Pozíció sor: balra a hengerkoordináta panel, jobbra mellette a malom panel
-        pozicio_sor = tk.Frame(self.root, bg="#1e272e")
-        pozicio_sor.pack(fill="x", padx=15, pady=5)
+        pozicio_sor = vezerlo_sor
 
         # 4/a. Térbeli koordináta panel (hengerkoordináták)
         self.xyz_frame = tk.LabelFrame(pozicio_sor, text=" 📐 Hengerkoordináta Pozíció (R mm, φ fok, Z mm) ", bg="#1e272e", fg="#ffa801", font=('Helvetica', 10, 'bold'), bd=2)
@@ -118,15 +124,15 @@ class FelhasznaloiFelulet:
         self.queue_frame.pack(fill="x", padx=15, pady=5)
         
         self.auto_btn = ttk.Button(self.queue_frame, text="📦 AUTOMATA FOLYAMAT (Pakolás) INDÍTÁSA", style="Auto.TButton", command=self.on_auto_sequence)
-        self.auto_btn.pack(fill="x", padx=15, pady=5)
+        self.auto_btn.pack(side="left", fill="x", expand=True, padx=(15, 5), pady=8)
         
         self.qstop_btn = ttk.Button(self.queue_frame, text="🛑 QUEUE VÉSZLEÁLLÍTÁS (QSTOP)", style="QStop.TButton", command=self.on_qstop)
-        self.qstop_btn.pack(fill="x", padx=15, pady=5)
+        self.qstop_btn.pack(side="left", fill="x", expand=True, padx=(5, 15), pady=8)
 
         # 6. Monitor panel
         term_frame = tk.LabelFrame(self.root, text=" 🖥️ Soros Monitor ", bg="#1e272e", fg="#0be881", font=('Helvetica', 10, 'bold'), bd=2)
         term_frame.pack(fill="both", expand=True, padx=15, pady=10)
-        self.terminal = tk.Text(term_frame, bg="#2f3640", fg="#0be881", font=('Courier New', 9), state="disabled", wrap="word")
+        self.terminal = tk.Text(term_frame, bg="#2f3640", fg="#0be881", font=('Courier New', 9), state="disabled", wrap="word", height=8)
         self.terminal.pack(fill="both", expand=True, padx=5, pady=5)
 
     def _motor_sor_letrehozasa(self, nev, sor_idx, alapert_ert):
@@ -176,6 +182,7 @@ class FelhasznaloiFelulet:
     def set_controls_state(self, state):
         self.home_btn.config(state=state)
         self.kamera_kal_btn.config(state=state)
+        self.malom_inditas_btn.config(state=state)
         self.send_btn.config(state=state)
         self.xyz_send_btn.config(state=state)
         self.malom_btn.config(state=state)

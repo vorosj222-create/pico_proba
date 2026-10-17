@@ -29,6 +29,10 @@ FELSO_Z = -35.0          # a pontok között ennél lejjebb sosem mehet a kar (b
 KANYAR_MM = 10.0         # a sarkok lekerekítése (mm); a kar ennyivel FELSO_Z fölött halad (-25),
                          # így a lekerekített kanyar sem viszi FELSO_Z alá, és nem áll meg a sarkokban
 KALIBRACIOS_POZICIO = (118.0, 90.0, 51.0)   # kamera kalibrációkor ide áll a kar (r, phi, z), hogy ne takarja a táblát
+# --- Játék ---
+ROBOT_SZIN = "Z"         # a robot bábui zöldek, a kamera 'Z' betűvel jelöli
+EMBER_SZIN = "P"         # az ember bábui pirosak ('P')
+KEZDES_VARAKOZAS = 10.0  # s: a Malom! gomb után ennyi ideje van az embernek kezdeni, különben a robot kezd
 CLAW_NYITVA = 96         # J5 fogó: nyitott állás bábu áthelyezésnél (fogás előtt / elengedés)
 CLAW_ZARVA = 150         # J5 fogó: zárt állás (bábu megfogása)
 BABU_Z = -55.0           # bábu áthelyezésnél erre a magasságra ereszkedik le (fogás és lerakás)

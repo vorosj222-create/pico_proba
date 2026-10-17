@@ -4,6 +4,8 @@ import math
 import sys
 import threading
 import queue
+import time
+from collections import deque, Counter
 
 import malom_tabla   # a tábla- és tartalékhelyek táblakoordinátái (ugyanaz, amit a robotkar használ)
 
@@ -30,6 +32,8 @@ PONT_ABLAK_NEV = "Malom pontok (bal: sotet maszk, jobb: vonalak nelkul)"
 MALOM_PONTOK_SZAMA = 24
 ADAPTIV_BLOKK = 61       # px, páratlan; a helyi sötétség-küszöb ablaka (egyenetlen megvilágítás ellen)
 ADAPTIV_C = 10           # ennyivel sötétebbnek kell lennie a környezeténél, hogy "fekete" legyen
+SOTET_MAX_SZINESSEG = 40     # max(R,G,B) - min(R,G,B): a fekete pont ~25 alatt van (meleg fénynél is),
+                             # a zöld bábu ~55, a piros 75+ -> a bábuk ne számítsanak malompontnak
 ALAP_SUGAR_PX = 8        # a csúszka induló értéke: a keresett kör sugara pixelben (bemérve)
 MAX_SUGAR_PX = 40        # a csúszka felső határa
 MERET_TURES = 0.25       # ±25% a beállított sugárhoz képest
@@ -40,9 +44,28 @@ CSUSZKA_NEV = "Kor sugara px"
 
 SZINKERESES = False      # a piros/zöld keresés ('s' billentyűvel kapcsolható)
 
+# --- Bábuk színe a táblapontokon (kalibráció után) ---
+# HSV (OpenCV: H 0-179, S és V 0-255). A fehér papír és a fekete pontok telítettsége ~10 alatt van,
+# a bábuké 80 fölött, így a telítettség választja el a bábut a háttértől, a színárnyalat a színeket.
+BABU_SZINEK = {
+    "P": [(160, 179), (0, 10)],   # piros: a skála két végén (körbefordul a 0-hoz)
+    "Z": [(40, 90)],              # zöld
+}                                 # a sárga (~26) egyik tartományba sem esik -> nem számít bábunak
+BABU_MIN_TELITETTSEG = 60
+BABU_MIN_FENYERO = 50
+BABU_MINTA_ARANY = 0.3    # a mintavételi kör sugara a legbelső négyzet pontközének ennyiszerese
+BABU_MIN_ARANY = 0.30     # a mintavételi kör pixeleinek legalább ennyi része legyen az adott színű
+BABU_SIMITAS = 5          # az utolsó ennyi képkocka többségi szavazata dönt (ne villogjon)
+TABLA_STABIL_MP = 1.0     # új stabil helyzet: a 24 táblapont tartalma (van-e bábu, milyen színű) ennyi ideig
+                          # MINDEN képkockán ugyanaz, és eltér az előző stabil helyzettől
+                          # (amíg a kéz a tábla fölött mozog, nem jelez)
+OSSZES_PONT = 42          # 0-23 táblapontok + 24-41 tartalékhelyek
+
 # --- Kamera kalibráció (pixel <-> robot) ---
 KAL_KEPKOCKA = 10        # ennyi olyan képkocka átlagából számol, amelyen mind a 24 pont megvan
 KAL_MAX_KEPKOCKA = 90    # legfeljebb ennyi képkockát próbál (kb. 3 s), utána hibát jelez
+KAL_MAX_HIBA_MM = 5.0    # ha a 24 pont közül bármelyik ennél jobban eltér, a kalibrációt elveti
+                         # (rossz pontot talált, pl. bábut nézett pontnak -> elcsúszott számozás)
 
 # --- A keresett színek ---
 # Mérték pixelenként: a saját csatorna mínusz a másik kettő közül a nagyobb
@@ -117,6 +140,12 @@ def sotet_maszk(frame):
     szurke = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0)
     maszk = cv2.adaptiveThreshold(szurke, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                   cv2.THRESH_BINARY_INV, ADAPTIV_BLOKK, ADAPTIV_C)
+    # csak a színtelen sötét részek: a zöld/piros bábu szürkében szintén sötét, de színes.
+    # Abszolút színességet nézünk (nem HSV telítettséget, mert az sötét pixeleken a meleg
+    # színárnyalatú fénytől is nagy lehet)
+    simitott = cv2.GaussianBlur(frame, (5, 5), 0)
+    szinesseg = simitott.max(axis=2).astype(np.int16) - simitott.min(axis=2).astype(np.int16)
+    maszk[szinesseg >= SOTET_MAX_SZINESSEG] = 0
     return cv2.morphologyEx(maszk, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # apró zaj ki
 
 
@@ -289,6 +318,10 @@ def kalibracio_futtatasa(cap, sugar):
     hiba_mm = np.linalg.norm(vissza - robot_24, axis=1)
     info = (f"atlag {hiba_px.mean():.1f} px / {hiba_mm.mean():.1f} mm, "
             f"max {hiba_px.max():.1f} px / {hiba_mm.max():.1f} mm (a {int(np.argmax(hiba_mm))}. pontnal)")
+    if hiba_mm.max() > KAL_MAX_HIBA_MM:
+        return None, None, (f"tul nagy az elteres ({info}). Valoszinuleg nem a 24 malompontot talalta meg: "
+                            f"legyen ures a tabla, ne legyen mas sotet kerek folt a kepen, es ellenorizd a "
+                            f"szamozast ('p' billentyu: elonezet)!")
     return H, H_inv, info
 
 
@@ -301,6 +334,54 @@ def pixel_robotba(H_inv, x, y):
 def robot_pixelbe(H, rx, ry):
     px, py = cv2.perspectiveTransform(np.array([[[rx, ry]]], dtype=np.float64), H)[0][0]
     return int(round(px)), int(round(py))
+
+
+def tabla_pixelpontok(H, robot_pontok):
+    """A 42 pont (tábla + tartalék) pixelhelye a kalibráció alapján, és a mintavételi kör sugara pixelben."""
+    pixelek = {i: robot_pixelbe(H, *robot_pontok[i]) for i in range(OSSZES_PONT)}
+    pontkoz = math.dist(pixelek[6], pixelek[7])          # a legbelső négyzet két szomszédos pontja
+    return pixelek, max(3, int(round(BABU_MINTA_ARANY * pontkoz)))
+
+
+def babuk_a_pontokon(frame, pixelek, sugar):
+    """
+    Minden táblaponton megnézi, milyen színű bábu áll rajta.
+    Visszatér: {pont: 'P' / 'Z' / None}.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mag, szel = hsv.shape[:2]
+    yy, xx = np.ogrid[-sugar:sugar + 1, -sugar:sugar + 1]
+    kor = (xx * xx + yy * yy) <= sugar * sugar
+    eredmeny = {}
+    for p, (x, y) in pixelek.items():
+        if not (sugar <= x < szel - sugar and sugar <= y < mag - sugar):
+            eredmeny[p] = None
+            continue
+        resz = hsv[y - sugar:y + sugar + 1, x - sugar:x + sugar + 1][kor]
+        h, s, v = resz[:, 0], resz[:, 1], resz[:, 2]
+        szines = (s >= BABU_MIN_TELITETTSEG) & (v >= BABU_MIN_FENYERO)
+        legjobb, legjobb_arany = None, BABU_MIN_ARANY
+        for betu, tartomanyok in BABU_SZINEK.items():
+            talalat = np.zeros_like(szines)
+            for also, felso in tartomanyok:
+                talalat |= (h >= also) & (h <= felso)
+            arany = float(np.count_nonzero(szines & talalat)) / len(resz)
+            if arany >= legjobb_arany:
+                legjobb, legjobb_arany = betu, arany
+        eredmeny[p] = legjobb
+    return eredmeny
+
+
+def babuk_rajzolasa(frame, pixelek, sugar, allapot):
+    """A bábu mellé kiírja a színét: P (piros) vagy Z (zöld)."""
+    for p, betu in allapot.items():
+        if betu is None:
+            continue
+        x, y = pixelek[p]
+        szin = (0, 0, 255) if betu == "P" else (0, 200, 0)
+        hely = (x + sugar + 2, y - sugar + 4)
+        cv2.putText(frame, betu, hely, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 5)   # körvonal
+        cv2.putText(frame, betu, hely, cv2.FONT_HERSHEY_SIMPLEX, 0.8, szin, 2)
 
 
 def stdin_olvaso(parancsok):
@@ -354,14 +435,23 @@ def main():
     kal_info = ""
     robot_pontok = {}
     kattintas_eredmeny = None             # (kattintott pixel, legközelebbi pont pixelhelye, szöveg)
+    tabla_pixelek, minta_sugar = {}, 0    # a 24 táblapont pixelhelye (kalibráció után)
+    babu_elozmeny = {}                    # pontonként az utolsó néhány képkocka eredménye (simítás)
+    stabil_tabla = None                   # az utolsó stabil helyzet a 0-23 pontokon (24 karakter)
+    jelolt_tabla, jelolt_ota = None, 0.0  # a mostani (még nem elég régi) nyers táblahelyzet
+    tartalek_most = "." * (OSSZES_PONT - MALOM_PONTOK_SZAMA)   # a 24-41 helyek (simított) állapota
 
     try:
         while True:
             # --- kalibrálási kérés (robotkar programjától vagy a 'k' billentyűtől) ---
             kalibralj = False
             while not parancsok.empty():
-                if parancsok.get() == "KALIBRALAS":
+                parancs = parancsok.get()
+                if parancs == "KALIBRALAS":
                     kalibralj = True
+                elif parancs == "ALLAPOT":
+                    # a robotkar programja lekéri a jelenlegi (tartós) állapotot
+                    print(f"TABLA {stabil_tabla}{tartalek_most}" if stabil_tabla else "TABLA_NINCS", flush=True)
             if kalibralj:
                 sugar = max(2, cv2.getTrackbarPos(CSUSZKA_NEV, ABLAK_NEV))
                 uj_H, uj_H_inv, szoveg = kalibracio_futtatasa(cap, sugar)
@@ -370,6 +460,9 @@ def main():
                 else:
                     H, H_inv, kal_info = uj_H, uj_H_inv, szoveg
                     robot_pontok = robot_xy_pontok()
+                    tabla_pixelek, minta_sugar = tabla_pixelpontok(H, robot_pontok)
+                    babu_elozmeny = {p: deque(maxlen=BABU_SIMITAS) for p in tabla_pixelek}
+                    stabil_tabla, jelolt_tabla = None, None
                     kattintas_eredmeny = None
                     elonezet = maszk_latszik = False
                     ablak_bezaras(PONT_ABLAK_NEV)
@@ -396,7 +489,22 @@ def main():
                         cv2.imshow(PONT_ABLAK_NEV, cv2.resize(np.hstack([sotet, magok]), None, fx=0.5, fy=0.5))
                 cv2.putText(frame, "NINCS KALIBRALVA", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             else:
-                # --- kalibrálva: nincs pontkeresés; kattintásra pixel -> robot koordináta ---
+                # --- kalibrálva: nincs pontkeresés; bábuk színe a pontokon, kattintásra pixel -> robot ---
+                nyers = babuk_a_pontokon(eredeti, tabla_pixelek, minta_sugar)
+                for p, betu in nyers.items():
+                    babu_elozmeny[p].append(betu)
+                # a kiírt betűk simítva (ne villogjanak), a lépésfelismerés viszont a nyers képkockákból
+                allapot = {p: Counter(e).most_common(1)[0][0] for p, e in babu_elozmeny.items()}
+                babuk_rajzolasa(frame, tabla_pixelek, minta_sugar, allapot)
+                tartalek_most = "".join(allapot[p] or "." for p in range(MALOM_PONTOK_SZAMA, OSSZES_PONT))
+                # új stabil helyzet: a 0-23 pontok nyers állapota TABLA_STABIL_MP ideig minden képkockán
+                # ugyanaz, és eltér az előzőtől -> jelentés: 'TABLA ' + 24 tábla + 18 tartalék karakter
+                tabla_most = "".join(nyers[p] or "." for p in range(MALOM_PONTOK_SZAMA))
+                if tabla_most != jelolt_tabla:
+                    jelolt_tabla, jelolt_ota = tabla_most, time.time()      # változott: az óra újraindul
+                elif tabla_most != stabil_tabla and time.time() - jelolt_ota >= TABLA_STABIL_MP:
+                    stabil_tabla = tabla_most
+                    print(f"TABLA {stabil_tabla}{tartalek_most}", flush=True)
                 if kattintas["pont"] is not None:
                     kx, ky = kattintas["pont"]
                     kattintas["pont"] = None

@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 import time
 import threading
+import queue
 import os
 import sys
 import subprocess
@@ -23,6 +24,8 @@ class RobotkarAlkalmazas:
         self.aktualis_z = 51.0
         self.homing_folyamatban = False
         self.kamera = None   # a Kamera_nezo.py folyamata (inditas() állítja be)
+        self.kamera_kalibralva = False
+        self.tabla_uzenetek = queue.Queue()   # a kamera "TABLA ..." üzenetei (42 karakteres állapot vagy None)
         
         self.soros = SorosKezelo(log_callback=self.log_erkezett)
         self.kinematika = InverzKinematika()
@@ -44,7 +47,8 @@ class RobotkarAlkalmazas:
             on_auto_sequence=self.esemeny_automatizacio_inditas,
             on_malom_pont=self.esemeny_malom_pont,
             on_babu_athelyezes=self.esemeny_babu_athelyezes,
-            on_kamera_kalibracio=self.esemeny_kamera_kalibracio
+            on_kamera_kalibracio=self.esemeny_kamera_kalibracio,
+            on_malom_inditas=self.esemeny_malom_inditas
         )
         
         self._feluleti_ertekek_alaphelyzetbe()
@@ -169,27 +173,33 @@ class RobotkarAlkalmazas:
 
     def _babu_athelyezes_folyamat(self, honnan, hova, j4, j5):
         try:
-            self.log_erkezett(f"[BÁBU] Áthelyezés: {honnan} -> {hova}\n")
-            # 1. a "honnan" pont fölé (fel a biztonsági magasságba, majd át)
-            r, phi, _ = self.malom_pontok[honnan]
-            if not self.mozgas_utvonalon(self._pont_feletti_utvonal(honnan), j4, j5, blokkolo=True,
-                                         lekerekites_mm=malom_tabla.KANYAR_MM): return self._babu_megszakitva()
-            # 2. fogó nyit
-            if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
-            # 3. le a bábuhoz
-            if not self.mozgas_utvonalon([(r, phi, malom_tabla.BABU_Z)], j4, malom_tabla.CLAW_NYITVA, blokkolo=True): return self._babu_megszakitva()
-            # 4. fogó zár (megfogás)
-            if not self._fogo_allitas(j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
-            # 5. fel, át a "hová" pont fölé, le (lekerekítve, a pontok között sosem megy FELSO_Z alá)
-            if not self._ponthoz_megy(hova, malom_tabla.BABU_Z, j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
-            # 6. fogó nyit (elengedés)
-            if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
-            self.log_erkezett(f"[BÁBU] Kész: {honnan} -> {hova}\n")
+            self._babu_mozgatas(honnan, hova, j4, j5)
         finally:
             self.eteto.lefoglalva = False
 
+    def _babu_mozgatas(self, honnan, hova, j4, j5):
+        """Blokkoló: egy bábut áttesz a "honnan" pontról a "hová" pontra. True, ha végigment."""
+        self.log_erkezett(f"[BÁBU] Áthelyezés: {honnan} -> {hova}\n")
+        # 1. a "honnan" pont fölé (fel a biztonsági magasságba, majd át)
+        r, phi, _ = self.malom_pontok[honnan]
+        if not self.mozgas_utvonalon(self._pont_feletti_utvonal(honnan), j4, j5, blokkolo=True,
+                                     lekerekites_mm=malom_tabla.KANYAR_MM): return self._babu_megszakitva()
+        # 2. fogó nyit
+        if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
+        # 3. le a bábuhoz
+        if not self.mozgas_utvonalon([(r, phi, malom_tabla.BABU_Z)], j4, malom_tabla.CLAW_NYITVA, blokkolo=True): return self._babu_megszakitva()
+        # 4. fogó zár (megfogás)
+        if not self._fogo_allitas(j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
+        # 5. fel, át a "hová" pont fölé, le (lekerekítve, a pontok között sosem megy FELSO_Z alá)
+        if not self._ponthoz_megy(hova, malom_tabla.BABU_Z, j4, malom_tabla.CLAW_ZARVA): return self._babu_megszakitva()
+        # 6. fogó nyit (elengedés)
+        if not self._fogo_allitas(j4, malom_tabla.CLAW_NYITVA): return self._babu_megszakitva()
+        self.log_erkezett(f"[BÁBU] Kész: {honnan} -> {hova}\n")
+        return True
+
     def _babu_megszakitva(self):
         self.log_erkezett("[BÁBU] Áthelyezés megszakítva.\n")
+        return False
 
     def _fogo_allitas(self, j4, j5):
         """Csak a fogót (J5) állítja, a kar helyben marad; utána vár. False, ha közben QSTOP jött."""
@@ -397,7 +407,12 @@ class RobotkarAlkalmazas:
             sor = sor.rstrip()
             if not sor:
                 continue
+            if sor.startswith("TABLA"):
+                # tábla állapot: 42 karakter ('P', 'Z', '.'), 0-23 tábla, 24-41 tartalék; nem írjuk ki
+                self.tabla_uzenetek.put(sor[6:].strip() if sor.startswith("TABLA ") else None)
+                continue
             if sor.startswith("KALIBRACIO_OK"):
+                self.kamera_kalibralva = True
                 szoveg = sor[len("KALIBRACIO_OK"):].strip()
                 self.log_erkezett(f"[KAMERA] Kalibráció kész. Illeszkedés: {szoveg}\n")
                 self.root.after(0, lambda t=szoveg: messagebox.showinfo("Kamera kalibráció", f"Kalibráció kész.\nIlleszkedés: {t}"))
@@ -440,7 +455,7 @@ class RobotkarAlkalmazas:
         def folyamat():
             try:
                 self.log_erkezett("[KAMERA] Kalibráció: a kar kiáll a képből...\n")
-                if not self.mozgas_utvonalon([malom_tabla.KALIBRACIOS_POZICIO], j4, j5, blokkolo=True):
+                if not self._malom_kar_kepbol_ki(j4, j5):
                     self.log_erkezett("[KAMERA] Kalibráció megszakítva (a kar nem ért oda).\n")
                     return
                 if self.eteto._stop.wait(0.5):      # rezgés lecsengése; QSTOP-ra megszakad
@@ -452,6 +467,296 @@ class RobotkarAlkalmazas:
             finally:
                 self.eteto.lefoglalva = False
         threading.Thread(target=folyamat, daemon=True).start()
+
+    # =====================================================================
+    # MALOM JÁTÉK - 1. lépés: kezdés (ki kezd?) és az ember első lépésének felismerése
+    # =====================================================================
+    def esemeny_malom_inditas(self):
+        if self.homing_folyamatban: return
+        if self.kamera is None or self.kamera.poll() is not None:
+            messagebox.showwarning("Malom", "A kamera program nem fut!")
+            return
+        if not self.kamera_kalibralva:
+            messagebox.showwarning("Malom", "Előbb kalibráld a kamerát (KAMERA KALIBRÁCIÓ, üres táblán)!")
+            return
+        if self.eteto.foglalt():
+            self.log_erkezett("[FIGYELEM] Mozgás folyamatban, várd meg a végét vagy QSTOP!\n")
+            return
+        try:
+            j4 = int(self.gui.j4_entry.get())
+            j5 = int(self.gui.j5_entry.get())
+        except ValueError:
+            return
+        nehezseg = self._nehezseg_valasztas()
+        if nehezseg is None:
+            return                                           # mégsem
+        self.eteto.uj_mozgas()
+        self.eteto.lefoglalva = True
+        threading.Thread(target=self._malom_kezdes, args=(j4, j5, nehezseg), daemon=True).start()
+
+    def _nehezseg_valasztas(self):
+        """Kis ablak három gombbal: Könnyű / Közepes / Nehéz. Visszatér: 'konnyu' / 'kozepes' / 'nehez' / None."""
+        valasztas = {"ertek": None}
+        ablak = tk.Toplevel(self.root)
+        ablak.title("Malom - nehézség")
+        ablak.configure(bg="#1e272e")
+        ablak.resizable(False, False)
+        ablak.transient(self.root)
+        tk.Label(ablak, text="Milyen erős legyen a robot?", bg="#1e272e", fg="white",
+                 font=('Helvetica', 12, 'bold')).pack(padx=25, pady=(18, 10))
+        sor = tk.Frame(ablak, bg="#1e272e")
+        sor.pack(padx=20, pady=(0, 18))
+        for kulcs, nev, szin in (("konnyu", "Könnyű", "#0be881"), ("kozepes", "Közepes", "#ffa801"),
+                                 ("nehez", "Nehéz", "#ff3f34")):
+            tk.Button(sor, text=nev, width=10, font=('Helvetica', 11, 'bold'), bg=szin, fg="black",
+                      command=lambda k=kulcs: (valasztas.update(ertek=k), ablak.destroy())
+                      ).pack(side="left", padx=6)
+        ablak.update_idletasks()                             # a főablak közepére
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - ablak.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - ablak.winfo_reqheight()) // 3
+        ablak.geometry(f"+{max(0, x)}+{max(0, y)}")
+        ablak.grab_set()                                     # amíg nyitva van, a főablak nem kezelhető
+        self.root.wait_window(ablak)
+        return valasztas["ertek"]
+
+    def _malom_kar_kepbol_ki(self, j4, j5):
+        """
+        A kart kiviszi a kamera látószögéből (a kalibrációs helyzetbe). False, ha nem sikerült.
+        Ha a kar lent van (pl. épp letett egy bábut), előbb függőlegesen felemelkedik a haladási
+        magasságba, és csak onnan megy ki, különben elsodorná a bábukat. A sarkot ugyanúgy
+        kerekíti le, mint a bábumozgatásnál, így a ponton kívül sosem megy FELSO_Z alá.
+        """
+        z_fent = max(self.aktualis_z, malom_tabla.FELSO_Z + malom_tabla.KANYAR_MM)
+        utvonal = [(self.aktualis_r, self.aktualis_phi, z_fent), malom_tabla.KALIBRACIOS_POZICIO]
+        return self.mozgas_utvonalon(utvonal, j4, j5, blokkolo=True, lekerekites_mm=malom_tabla.KANYAR_MM)
+
+    def _tabla_allapot_lekerese(self, varakozas=3.0):
+        """Lekéri a kamerától a jelenlegi tartós táblaállapotot (42 karakter), vagy None."""
+        while not self.tabla_uzenetek.empty():          # régi üzenetek eldobása
+            self.tabla_uzenetek.get_nowait()
+        if not self.kamera_parancs("ALLAPOT"):
+            return None
+        try:
+            return self.tabla_uzenetek.get(timeout=varakozas)
+        except queue.Empty:
+            return None
+
+    def _malom_uzenet(self, szoveg, felugro=False):
+        self.log_erkezett(f"[MALOM] {szoveg}\n")
+        if felugro:
+            self.root.after(0, lambda: messagebox.showinfo("Malom", szoveg))
+
+    def _ember_lepesre_var(self, alap, hatarido=None):
+        """
+        Megvárja, amíg az ember egy piros bábut tesz egy üres táblapontra (új stabil helyzet a kamerától).
+        alap: az előző stabil helyzet (42 karakter). hatarido: time.time() érték vagy None (nincs időkorlát).
+        Visszatér: (új_állapot, pont), vagy (None, None) időtúllépéskor / QSTOP-ra.
+        Nem értelmezhető változásnál szól, és tovább vár (az ember kijavíthatja).
+        """
+        jelzett = None
+        while True:
+            if self.eteto._stop.is_set():
+                return None, None
+            maradek = None if hatarido is None else hatarido - time.time()
+            if maradek is not None and maradek <= 0:
+                return None, None
+            try:
+                allapot = self.tabla_uzenetek.get(timeout=0.25 if maradek is None else min(0.25, maradek))
+            except queue.Empty:
+                continue
+            if allapot is None:
+                continue
+            uj = [p for p in range(24) if alap[p] == "." and allapot[p] != "."]
+            eltunt = [p for p in range(24) if alap[p] != "." and allapot[p] == "."]
+            valtozott = [p for p in range(24) if alap[p] != "." and allapot[p] not in (".", alap[p])]
+            if not uj and not eltunt and not valtozott:
+                continue                                   # visszaállt az előző helyzet: semmi
+            if len(uj) == 1 and not eltunt and not valtozott and allapot[uj[0]] == malom_tabla.EMBER_SZIN:
+                return allapot, uj[0]
+            leiras = (f"új: {[(p, allapot[p]) for p in uj]}, eltűnt: {eltunt}, színt váltott: {valtozott}")
+            if leiras != jelzett:
+                jelzett = leiras
+                self._malom_uzenet(f"Nem értelmezhető változás a táblán ({leiras}). "
+                                   f"Egy piros bábut tegyél egy üres pontra!")
+
+    def _stabil_allapotra_var(self, feltetel, idotullepes=6.0):
+        """Lekéri a táblaállapotot, és vár, amíg a feltétel teljesül (vagy lejár az idő). Az utolsó állapot."""
+        utolso = self._tabla_allapot_lekerese()
+        hatarido = time.time() + idotullepes
+        while not (utolso is not None and feltetel(utolso)) and time.time() < hatarido:
+            if self.eteto._stop.is_set():
+                break
+            try:
+                uj = self.tabla_uzenetek.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if uj is not None:
+                utolso = uj
+        return utolso
+
+    def _tabla_egyezesre_var(self, motor):
+        """
+        A robot lépése után: megvárja, hogy a kamera által látott tábla megegyezzen a motor állapotával.
+        Eltérésnél kiírja a különbséget, és vár a kézi javításra (QSTOP-ra megszakad).
+        Visszatér: a kamera állapota (42 karakter), vagy None.
+        """
+        vart = motor.tabla()
+        allapot = self._stabil_allapotra_var(lambda a: a[:24] == vart)
+        jelzett = None
+        while allapot is None or allapot[:24] != vart:
+            if self.eteto._stop.is_set():
+                return None
+            if allapot is not None:
+                elteres = ", ".join(f"{p}: várt '{vart[p]}', látott '{allapot[p]}'"
+                                    for p in range(24) if allapot[p] != vart[p])
+                if elteres != jelzett:
+                    jelzett = elteres
+                    self._malom_uzenet(f"A tábla nem egyezik a játékállással ({elteres}). "
+                                       f"Kérlek, javítsd ki kézzel!")
+            try:
+                uj = self.tabla_uzenetek.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if uj is not None:
+                allapot = uj
+        return allapot
+
+    def _robot_lep(self, motor, alap, j4, j5):
+        """
+        A robot lépése a malom motor szerint: lerakás a 33-41 tartalékból, vagy tologatás / ugrás a táblán,
+        malom esetén a levett piros bábu a 24-32 helyek következőjére. Visszatér: a kamera állapota vagy None.
+        """
+        self._malom_uzenet("A robot gondolkodik...")
+        lepes = motor.robot_lepese()
+        honnan, hova = motor.lepes_bontasa(lepes)
+        if honnan is None:                                   # lerakás: bábu a tartalékból
+            tartalek = [p for p in malom_tabla.ALSO_TARTALEK if alap[p] == malom_tabla.ROBOT_SZIN]
+            if not tartalek:
+                self._malom_uzenet("Nincs több zöld bábu a 33-41 tartalékhelyeken!", True)
+                return None
+            honnan = tartalek[0]
+            self._malom_uzenet(f"A robot lép: zöld bábu a(z) {honnan}. tartalékhelyről a(z) {hova}. pontra.")
+        else:
+            self._malom_uzenet(f"A robot lép: {honnan} -> {hova}.")
+        if not self._babu_mozgatas(honnan, hova, j4, j5):
+            return None
+        motor.lep(lepes)
+
+        if motor.robot_jon() and motor.levetel_jon():        # malom: le kell venni egy piros bábut
+            levetel = motor.robot_lepese()
+            _, pont = motor.lepes_bontasa(levetel)
+            if self._levett_db >= len(malom_tabla.FELSO_TARTALEK):
+                self._malom_uzenet("Nincs több hely a levett bábuknak (24-32)!", True)
+                return None
+            hely = malom_tabla.FELSO_TARTALEK[self._levett_db]
+            self._malom_uzenet(f"Malom! A robot leveszi a(z) {pont}. ponton álló piros bábut "
+                               f"(a(z) {hely}. helyre teszi).")
+            if not self._babu_mozgatas(pont, hely, j4, j5):
+                return None
+            motor.lep(levetel)
+            self._levett_db += 1
+
+        if not self._malom_kar_kepbol_ki(j4, j5):
+            return None
+        return self._tabla_egyezesre_var(motor)
+
+    def _ember_lep(self, motor):
+        """
+        Megvárja az ember szabályos lépését (és ha malmot rakott, a levételt is). A kamera minden új stabil
+        helyzetét összeveti a motor szabályos lépéseivel. Visszatér: a kamera állapota vagy None (QSTOP).
+        """
+        self._malom_uzenet(f"Te jössz: {motor.ember_feladata()}.")
+        jelzett = None
+        while True:
+            if self.eteto._stop.is_set():
+                return None
+            try:
+                allapot = self.tabla_uzenetek.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            if allapot is None or allapot[:24] == motor.tabla():
+                continue                                     # nincs változás a táblán
+            lepesek = motor.ember_lepesei(allapot[:24])
+            if lepesek is None:
+                elteres = ", ".join(f"{p}: '{motor.tabla()[p]}' -> '{allapot[p]}'"
+                                    for p in range(24) if allapot[p] != motor.tabla()[p])
+                if elteres != jelzett:
+                    jelzett = elteres
+                    self._malom_uzenet(f"Ez nem szabályos lépés ({elteres}). Feladat: {motor.ember_feladata()}.")
+                continue
+            for lepes in lepesek:
+                self._malom_uzenet(f"Lépésed: {motor.lepes_szovege(lepes)}.")
+                motor.lep(lepes)
+            if motor.vege() or motor.robot_jon():
+                return allapot
+            # malmot rakott, de még nem vette le a bábut
+            self._malom_uzenet(f"Malom! Most {motor.ember_feladata()}.")
+            jelzett = None
+
+    def _malom_kezdes(self, j4, j5, nehezseg="kozepes"):
+        """Malom: kezdés (ki kezd?), majd a játék a malom motorral (OpenSpiel) a végéig."""
+        global malom_motor
+        try:
+            try:
+                import malom_motor                           # OpenSpiel kell hozzá (pip install open-spiel)
+            except ImportError as e:
+                self._malom_uzenet(f"A malom motor nem tölthető be ({e}). Telepítés: pip install open-spiel", True)
+                return
+            self._malom_uzenet(f"Új játék ({malom_motor.NEHEZSEGEK[nehezseg]['nev']} szint). "
+                               f"A kar kiáll a kamera látószögéből...")
+            if not self._malom_kar_kepbol_ki(j4, j5):
+                self._malom_uzenet("Megszakítva: a kar nem tudott kiállni a képből.", True)
+                return
+            # a kar kimozdulása után a kamerának idő kell, hogy a tábla állapota újra stabil legyen
+            if self.eteto._stop.wait(2.0):
+                return
+            alap = self._tabla_allapot_lekerese()
+            if alap is None:
+                self._malom_uzenet("Megszakítva: a kamera nem adott táblaállapotot.", True)
+                return
+            foglalt = [p for p in range(24) if alap[p] != "."]
+            if foglalt:
+                self._malom_uzenet(f"Megszakítva: a tábla nem üres, bábu van ezeken a pontokon: {foglalt}", True)
+                return
+            robot_babuk = sum(1 for p in malom_tabla.ALSO_TARTALEK if alap[p] == malom_tabla.ROBOT_SZIN)
+            if robot_babuk != len(malom_tabla.ALSO_TARTALEK):
+                self._malom_uzenet(f"Figyelem: a 33-41 tartalékhelyeken {robot_babuk} zöld bábut látok "
+                                   f"{len(malom_tabla.ALSO_TARTALEK)} helyett.")
+
+            # --- ki kezd? ---
+            ido = malom_tabla.KEZDES_VARAKOZAS
+            self._malom_uzenet(f"Ha te kezdesz, lépj {ido:.0f} másodpercen belül! Különben a robot kezd.")
+            # a stabil helyzet a lerakás után TABLA_STABIL_MP-vel (1 s) később jön, ezért kis ráhagyás
+            uj, pont = self._ember_lepesre_var(alap, hatarido=time.time() + ido + 2.0)
+            if self.eteto._stop.is_set():
+                self._malom_uzenet("Megszakítva (QSTOP).")
+                return
+            if uj is not None:
+                self._malom_uzenet(f"Te kezdtél: piros bábu a(z) {pont}. pontra.")
+                alap = uj
+            else:
+                self._malom_uzenet("Nem léptél: a robot kezd.")
+
+            # --- a játék a malom motorral (OpenSpiel): felváltva, a játék végéig ---
+            motor = malom_motor.MalomMotor(robot_kezd=(uj is None), nehezseg=nehezseg,
+                                           robot_szin=malom_tabla.ROBOT_SZIN, ember_szin=malom_tabla.EMBER_SZIN)
+            self._levett_db = 0
+            if uj is not None:
+                motor.lep(pont)                              # az ember első lerakása
+            while not motor.vege():
+                if motor.robot_jon():
+                    alap = self._robot_lep(motor, alap, j4, j5)
+                else:
+                    alap = self._ember_lep(motor)
+                if alap is None:
+                    self._malom_uzenet("Játék megszakítva.")
+                    return
+            eredmeny = motor.eredmeny()
+            szoveg = {"robot": "A robot nyert!", "ember": "Gratulálok, nyertél!",
+                      "döntetlen": "Döntetlen."}[eredmeny]
+            self._malom_uzenet(f"Vége a játéknak. {szoveg}", True)
+        finally:
+            self.eteto.lefoglalva = False
 
     def inditas(self):
         self.kamera = self._kamera_inditas()
